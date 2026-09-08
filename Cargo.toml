@@ -1,0 +1,24 @@
+[package]
+name = "settings-daemon"
+version = "0.1.0"
+edition = "2021"
+license = "TCL"
+description = "Settings daemon basis for TontooOS - store, library manager and socket stubs"
+repository = "https://github.com/TontooOS/SettingsDeamon"
+
+[lib]
+name = "settings_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "settings-daemon"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+# Fish Config (.fico) via the TontooOS system SDK (local checkout path,
+# `/Library/System/sdk` on the target system).
+sdk = { path = "../../TontooLibs/SDK", features = ["FishFile"] }

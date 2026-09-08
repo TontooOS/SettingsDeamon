@@ -1,0 +1,11 @@
+{
+  "settings.daemon.name": "Settings Daemon",
+  "settings.daemon.starting": "Settings daemon starting",
+  "settings.daemon.listening": "Listening on socket",
+  "settings.daemon.store_loaded": "Settings store loaded",
+  "settings.daemon.store_failed": "Failed to load settings store, starting empty",
+  "settings.hardware.refreshed": "Hardware snapshot refreshed",
+  "settings.hardware.failed": "Failed to refresh hardware snapshot",
+  "settings.os.refreshed": "OS identity refreshed",
+  "settings.os.failed": "Failed to refresh OS identity"
+}

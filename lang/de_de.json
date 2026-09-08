@@ -1,0 +1,11 @@
+{
+  "settings.daemon.name": "Einstellungs-Daemon",
+  "settings.daemon.starting": "Einstellungs-Daemon startet",
+  "settings.daemon.listening": "Lausche auf Socket",
+  "settings.daemon.store_loaded": "Einstellungsspeicher geladen",
+  "settings.daemon.store_failed": "Einstellungsspeicher konnte nicht geladen werden, starte leer",
+  "settings.hardware.refreshed": "Hardware-Snapshot aktualisiert",
+  "settings.hardware.failed": "Hardware-Snapshot konnte nicht aktualisiert werden",
+  "settings.os.refreshed": "OS-Identität aktualisiert",
+  "settings.os.failed": "OS-Identität konnte nicht aktualisiert werden"
+}

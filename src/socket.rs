@@ -10,13 +10,22 @@ use crate::store::SettingsStore;
 // Read protocol (newline-delimited JSON, one request per line)
 // ---------------------------------------------------------------------------
 //
-// Request:  {"id": 1, "op": "ping" | "get_hardware" | "get_os"}
+// Request:  {"id": 1, "op": "ping" | "get_hardware" | "get_os"
+//                 | "wifi_list" | "wifi_status"
+//                 | "wifi_connect" | "wifi_disconnect"
+//                 | "wifi_enable" | "wifi_disable" | "wifi_forget",
+//            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
 //
 // `get_hardware` returns the parsed `sys.fico` content, `get_os` the parsed
 // `os.fico` content. Missing or corrupt files return `ok: false`, never a
 // partial document.
+//
+// `wifi_list` and `wifi_status` are public read ops served to every client.
+// `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
+// `wifi_forget` are private write ops: no public client library exposes
+// them, only the Settings app (`com.tontoo.systemsettings`) may call them.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
@@ -101,10 +110,17 @@ fn handle_line(line: &str, sys: &Path, os: &Path) -> serde_json::Value {
   };
   let id = request.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
   let op = request.get("op").and_then(|v| v.as_str()).unwrap_or("");
-  dispatch(id, op, sys, os)
+  let params = request.get("params").cloned().unwrap_or(serde_json::Value::Null);
+  dispatch(id, op, &params, sys, os)
 }
 
-fn dispatch(id: u64, op: &str, sys: &Path, os: &Path) -> serde_json::Value {
+fn dispatch(
+  id: u64,
+  op: &str,
+  params: &serde_json::Value,
+  sys: &Path,
+  os: &Path,
+) -> serde_json::Value {
   match op {
     OP_PING => success_frame(id, serde_json::json!({"pong": true})),
     OP_GET_HARDWARE => match read_fico_json(sys) {
@@ -115,6 +131,45 @@ fn dispatch(id: u64, op: &str, sys: &Path, os: &Path) -> serde_json::Value {
       Ok(json) => success_frame(id, json),
       Err(e) => error_frame(id, format!("os.fico unavailable: {}", e)),
     },
+    crate::wifi::OP_WIFI_LIST => match crate::wifi::list() {
+      Ok(networks) => success_frame(id, serde_json::json!({"networks": networks})),
+      Err(e) => error_frame(id, format!("wifi scan failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_STATUS => match crate::wifi::status() {
+      Ok(value) => success_frame(id, value),
+      Err(e) => error_frame(id, format!("wifi status failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_CONNECT => {
+      let ssid = params.get("ssid").and_then(|v| v.as_str()).unwrap_or("");
+      let password = params.get("password").and_then(|v| v.as_str());
+      let hidden = params.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+      match crate::wifi::connect(ssid, password, hidden) {
+        Ok(status) => success_frame(
+          id,
+          serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, format!("wifi connect failed: {}", e)),
+      }
+    }
+    crate::wifi::OP_WIFI_DISCONNECT => match crate::wifi::disconnect() {
+      Ok(()) => success_frame(id, serde_json::json!({"disconnected": true})),
+      Err(e) => error_frame(id, format!("wifi disconnect failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_ENABLE => match crate::wifi::set_enabled(true) {
+      Ok(()) => success_frame(id, serde_json::json!({"enabled": true})),
+      Err(e) => error_frame(id, format!("wifi enable failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_DISABLE => match crate::wifi::set_enabled(false) {
+      Ok(()) => success_frame(id, serde_json::json!({"enabled": false})),
+      Err(e) => error_frame(id, format!("wifi disable failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_FORGET => {
+      let ssid = params.get("ssid").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::wifi::forget(ssid) {
+        Ok(removed) => success_frame(id, serde_json::json!({"forgotten": removed})),
+        Err(e) => error_frame(id, format!("wifi forget failed: {}", e)),
+      }
+    }
     _ => error_frame(id, format!("unknown op: {:?}", op)),
   }
 }
@@ -141,9 +196,13 @@ fn error_frame(id: u64, error: String) -> serde_json::Value {
 mod tests {
   use super::*;
 
+  fn no_params() -> serde_json::Value {
+    serde_json::Value::Null
+  }
+
   #[test]
   fn ping_frame() {
-    let frame = dispatch(7, OP_PING, Path::new("/nonexistent"), Path::new("/nonexistent"));
+    let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"));
     assert_eq!(frame["id"], 7);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["result"]["pong"], true);
@@ -151,7 +210,7 @@ mod tests {
 
   #[test]
   fn unknown_op_frame() {
-    let frame = dispatch(3, "delete_everything", Path::new("/nonexistent"), Path::new("/nonexistent"));
+    let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"));
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("unknown op"));
   }
@@ -165,9 +224,35 @@ mod tests {
 
   #[test]
   fn missing_file_frame() {
-    let frame = dispatch(1, OP_GET_OS, Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"));
+    let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"));
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("os.fico unavailable"));
+  }
+
+  #[test]
+  fn wifi_connect_rejects_missing_ssid() {
+    let frame = dispatch(
+      4,
+      crate::wifi::OP_WIFI_CONNECT,
+      &serde_json::json!({}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("wifi connect failed"));
+  }
+
+  #[test]
+  fn wifi_forget_rejects_missing_ssid() {
+    let frame = dispatch(
+      5,
+      crate::wifi::OP_WIFI_FORGET,
+      &serde_json::json!({}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("wifi forget failed"));
   }
 
   #[cfg(target_os = "linux")]

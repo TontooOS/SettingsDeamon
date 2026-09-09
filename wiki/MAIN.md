@@ -6,7 +6,8 @@ store, manages settings libraries, refreshes the hardware snapshot in
 clients over a unix socket.
 This repository holds the daemon basis plus the system backends:
 configuration, in-memory store with JSON persistence, library registry stub,
-hardware detection (processor, GPU, RAM), OS identity and socket accept stub.
+hardware detection (processor, GPU, RAM), OS identity, WiFi control with
+known networks in CoreData and the socket server.
 
 - Repository: https://github.com/TontooOS/SettingsDeamon
 - License: TCL
@@ -24,6 +25,7 @@ hardware detection (processor, GPU, RAM), OS identity and socket accept stub.
 | Hardware | [Hardware.md](Hardware.md) | Hardware backend, `sys.fico` snapshot of processor, GPU, RAM |
 | Os | [Os.md](Os.md) | OS identity backend, `os.fico` with name, version and beta flag |
 | Socket | [Socket.md](Socket.md) | Unix socket server basis and protocol roadmap |
+| WiFi | [Wifi.md](Wifi.md) | WiFi backend, known networks in CoreData, public/private socket ops |
 
 ## Quick Start
 
@@ -63,9 +65,15 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-09: WiFi backend. `wifi` module (scan with known flag, status,
+  connect, disconnect, enable, disable, forget), known networks in
+  CoreData (`KnownWifi` under `com.tontoo.settingsdaemon`), socket ops
+  `wifi_list`/`wifi_status` (public) plus `wifi_connect`/`wifi_disconnect`/
+  `wifi_enable`/`wifi_disable`/`wifi_forget` (private, Settings app only).
+  NetworkKit `Wifi` is read-only and queries the daemon first.
 - 2026-09-07: Read protocol. `ping`/`get_hardware`/`get_os` over
   newline-delimited JSON, served per connection thread. Used by the
-  SettingsProvider client library.
+  CoreSettings client library.
 - 2026-09-07: OS identity backend. `os` module (display name, codename,
   version, beta flag via `/etc/tontoo-release` plus env overrides),
   `os.fico` refresh at startup, `SETTINGS_OS_FICO` config key.

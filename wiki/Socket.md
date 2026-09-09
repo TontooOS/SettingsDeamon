@@ -20,6 +20,13 @@ Request:
 | `ping` | `{"pong": true}` |
 | `get_hardware` | Parsed `sys.fico` content (`processor`, `gpu0`..`gpuN`, `ram`) |
 | `get_os` | Parsed `os.fico` content (`os`) |
+| `wifi_list` | Nearby networks with `known` flag (`{"networks": [...]}`) |
+| `wifi_status` | Radio state plus active connection (`{"enabled": bool, "status": ...\|null}`) |
+| `wifi_connect` | Private: `{"ssid", "password"?, "hidden"?}` returns the verified status |
+| `wifi_disconnect` | Private: `{"disconnected": true}` |
+| `wifi_enable` | Private: `{"enabled": true}` |
+| `wifi_disable` | Private: `{"enabled": false}` |
+| `wifi_forget` | Private: `{"ssid"}` returns `{"forgotten": bool}` |
 
 Success reply:
 
@@ -39,6 +46,10 @@ Rules:
   usable id).
 - Malformed lines get an error frame, the connection stays open.
 - Missing or corrupt fico files return `ok: false`, never partial data.
+- The `wifi_*` write ops (`connect`, `disconnect`, `enable`, `disable`,
+  `forget`) are private: no public client library exposes them, only the
+  Settings app (`com.tontoo.systemsettings`) may call them. `wifi_list`
+  and `wifi_status` are public read ops served to every client.
 
 ## API
 
@@ -65,6 +76,12 @@ pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
 pub const OP_GET_OS: &str = "get_os";
 ```
+
+WiFi op names live with the backend (`settings_daemon::wifi::OP_WIFI_*`):
+`wifi_list`, `wifi_status` (public) and `wifi_connect`,
+`wifi_disconnect`, `wifi_enable`, `wifi_disable`, `wifi_forget`
+(private, Settings app only). Request params arrive as an optional
+`params` object next to `id` and `op`.
 
 ## Roadmap
 

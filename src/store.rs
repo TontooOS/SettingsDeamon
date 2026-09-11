@@ -123,6 +123,18 @@ mod tests {
   }
 
   #[test]
+  fn keys_lists_sorted_domain_keys() {
+    let mut store = SettingsStore::new(PathBuf::from("/tmp/tontoo-settings-test.json"));
+    assert!(store.keys("display").is_empty());
+    store.set("display", "night_light", json!(true));
+    store.set("display", "brightness", json!(80));
+    assert_eq!(
+      store.keys("display"),
+      vec!["brightness".to_string(), "night_light".to_string()]
+    );
+  }
+
+  #[test]
   fn save_load_roundtrip() {
     let dir = std::env::temp_dir().join("tontoo-settings-daemon-test");
     let path = dir.join("settings.json");

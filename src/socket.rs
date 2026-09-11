@@ -582,6 +582,97 @@ mod tests {
     assert!(frame["error"].as_str().unwrap().contains("unknown custom wallpaper"));
   }
 
+  #[test]
+  fn display_set_validates_before_touching_anything() {
+    let store = memory_store();
+    let frame = dispatch(
+      17,
+      crate::display::OP_DISPLAY_SET,
+      &serde_json::json!({"brightness": 120.0}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("invalid brightness"));
+  }
+
+  #[test]
+  fn display_get_needs_the_compositor() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var(
+      "COMPOSITOR_SOCKET",
+      "/nonexistent-display-test/compositor.sock",
+    );
+    let store = memory_store();
+    let frame = dispatch(
+      18,
+      crate::display::OP_DISPLAY_GET,
+      &no_params(),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unreachable"));
+    std::env::remove_var("COMPOSITOR_SOCKET");
+  }
+
+  /// Mock compositor socket replying one canned frame.
+  fn mock_display(reply: serde_json::Value) -> PathBuf {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+      "tontoo-display-mock-{}-{}.sock",
+      std::process::id(),
+      NEXT_ID.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+    std::thread::spawn(move || {
+      if let Ok((mut stream, _)) = listener.accept() {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let mut out = reply.to_string();
+        out.push('\n');
+        let _ = stream.write_all(out.as_bytes());
+      }
+    });
+    path
+  }
+
+  #[test]
+  fn display_set_roundtrip_persists() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let sock = mock_display(serde_json::json!({"ok": true, "result": {
+      "output": "HDMI-1",
+      "mode": {"width": 1920, "height": 1080, "refresh": 120},
+      "brightness": 80,
+      "night_light": true,
+    }}));
+    std::env::set_var("COMPOSITOR_SOCKET", &sock);
+    let store = memory_store();
+    let frame = dispatch(
+      19,
+      crate::display::OP_DISPLAY_SET,
+      &serde_json::json!({"brightness": 80.0, "night_light": true}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["result"]["brightness"], 80);
+    assert_eq!(frame["result"]["night_light"], true);
+    assert_eq!(frame["result"]["outputs"], serde_json::Value::Null);
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
+  }
+
   #[cfg(target_os = "linux")]
   #[test]
   fn connection_roundtrip() {

@@ -33,6 +33,7 @@ Request:
 | `wallpaper_set_current` | Private: `{"kind", "id"}` returns the selected entry |
 | `wallpaper_set_fill` | Private: `{"fill"}` returns `{"fill"}` |
 | `wallpaper_add` | Private: `{"path", "name"?}` converts to PNG and returns the new entry |
+| `wallpaper_apply` | Private: `{"kind", "id", "variant"}` applies to the desktop, returns the applied entry |
 
 Success reply:
 
@@ -61,8 +62,9 @@ Rules:
   rejected with `ok: false` and leave the store untouched.
 - `wallpaper_set_current`, `wallpaper_set_fill` and `wallpaper_add`
   follow the same visibility rule (Settings app only);
-  `wallpaper_get` is public. Selection persistence only: nothing here
-  applies the wallpaper to the desktop.
+  `wallpaper_get` is public. `wallpaper_apply` (Settings app only)
+  resolves the variant file, forwards it to the compositor for the
+  desktop crossfade, then persists the selection.
 
 ## API
 
@@ -97,7 +99,8 @@ WiFi op names live with the backend (`settings_daemon::wifi::OP_WIFI_*`):
 and `customize_set` (private, Settings app only). Wallpaper op names live
 with the backend (`settings_daemon::wallpaper::OP_WALLPAPER_*`):
 `wallpaper_get` (public) and `wallpaper_set_current`,
-`wallpaper_set_fill`, `wallpaper_add` (private, Settings app only).
+`wallpaper_set_fill`, `wallpaper_add`, `wallpaper_apply` (private,
+Settings app only).
 Request params arrive as an optional `params` object next to `id` and
 `op`.
 

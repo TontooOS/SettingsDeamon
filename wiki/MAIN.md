@@ -67,6 +67,10 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Wallpaper apply. `wallpaper_apply` op (light/dark/auto
+  variant, `auto` follows the `customize` theme) forwards the resolved
+  file to the compositor socket for the desktop crossfade, then persists
+  the selection; entries carry `path_dark`. See [Wallpaper.md](Wallpaper.md).
 - 2026-09-11: Wallpaper backend. `wallpaper` module (premade packs from
   `/System/User/Wallpapers`, customs in
   `~/Library/Preferences/com.tontoo.wallpaper/` as PNG with CoreData

@@ -41,11 +41,19 @@ pub const OP_WALLPAPER_GET: &str = "wallpaper_get";
 pub const OP_WALLPAPER_SET_CURRENT: &str = "wallpaper_set_current";
 pub const OP_WALLPAPER_SET_FILL: &str = "wallpaper_set_fill";
 pub const OP_WALLPAPER_ADD: &str = "wallpaper_add";
+pub const OP_WALLPAPER_APPLY: &str = "wallpaper_apply";
 
 /// Kind tag for premade pack entries.
 pub const KIND_PREMADE: &str = "premade";
 /// Kind tag for user custom entries.
 pub const KIND_CUSTOM: &str = "custom";
+
+/// Wallpaper variants accepted by `wallpaper_apply`.
+pub const VARIANTS: &[&str] = &["light", "dark", "auto"];
+
+/// Compositor settings socket: forwards the resolved file for the
+/// desktop crossfade (`COMPOSITOR_SOCKET` override).
+pub const DEFAULT_COMPOSITOR_SOCKET: &str = "/run/tontoo-compositor.sock";
 
 /// Fill modes accepted by `wallpaper_set_fill`.
 pub const FILL_MODES: &[&str] = &["fill", "fit", "stretch", "center", "tile"];
@@ -80,12 +88,16 @@ pub fn premade_rank(id: &str) -> usize {
 }
 
 /// One listed wallpaper: a premade pack or a user custom file.
+/// `path` is the light (default) image, `path_dark` the dark variant
+/// (same file when the pack ships only one image).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WallpaperEntry {
   pub kind: String,
   pub id: String,
   pub name: String,
   pub path: String,
+  #[serde(default)]
+  pub path_dark: String,
 }
 
 /// Full wallpaper state behind `wallpaper_get`.
@@ -134,11 +146,12 @@ fn fish_name(manifest: &Path) -> Option<String> {
   None
 }
 
-/// Image file named by a pack manifest (`images: light: "..."` line), if any.
-fn fish_image(manifest: &Path) -> Option<String> {
+/// Manifest image file for a variant key (`light:` / `dark:` line), if any.
+fn fish_image_value(manifest: &Path, key: &str) -> Option<String> {
   let content = std::fs::read_to_string(manifest).ok()?;
+  let prefix = format!("{}:", key);
   for line in content.lines() {
-    if let Some(rest) = line.trim().strip_prefix("light:") {
+    if let Some(rest) = line.trim().strip_prefix(prefix.as_str()) {
       let file = rest.trim().trim_matches('"').trim();
       if !file.is_empty() {
         return Some(file.to_string());
@@ -159,11 +172,20 @@ fn is_image_file(path: &Path) -> bool {
   )
 }
 
-/// Preview image for a premade pack: the manifest `light` image when it
-/// exists, else the first image file in the directory (sorted).
-fn resolve_pack_image(dir: &Path) -> Option<PathBuf> {
+/// Preview image for a premade pack variant: the manifest file for the
+/// variant when it exists, else the `light` file, else the first image
+/// file in the directory (sorted).
+pub fn resolve_pack_file(dir: &Path, variant: &str) -> Option<PathBuf> {
   let manifest = dir.join("wallpaper.fish");
-  if let Some(file) = fish_image(&manifest) {
+  if variant == "dark" {
+    if let Some(file) = fish_image_value(&manifest, "dark") {
+      let candidate = dir.join(&file);
+      if candidate.is_file() {
+        return Some(candidate);
+      }
+    }
+  }
+  if let Some(file) = fish_image_value(&manifest, "light") {
     let candidate = dir.join(&file);
     if candidate.is_file() {
       return Some(candidate);
@@ -177,6 +199,12 @@ fn resolve_pack_image(dir: &Path) -> Option<PathBuf> {
     .collect();
   files.sort();
   files.into_iter().next()
+}
+
+/// Preview image for a premade pack: the manifest `light` image when it
+/// exists, else the first image file in the directory (sorted).
+fn resolve_pack_image(dir: &Path) -> Option<PathBuf> {
+  resolve_pack_file(dir, "light")
 }
 
 /// Premade packs from a directory: `(id, name, image path or "")` in
@@ -202,11 +230,15 @@ pub fn scan_premade_in(dir: &Path) -> Vec<WallpaperEntry> {
     let image = resolve_pack_image(&path)
       .and_then(|p| p.to_str().map(str::to_string))
       .unwrap_or_default();
+    let dark = resolve_pack_file(&path, "dark")
+      .and_then(|p| p.to_str().map(str::to_string))
+      .unwrap_or_else(|| image.clone());
     packs.push(WallpaperEntry {
       kind: KIND_PREMADE.to_string(),
       id,
       name,
       path: image,
+      path_dark: dark,
     });
   }
   packs.sort_by(|a, b| {
@@ -321,10 +353,12 @@ pub fn scan_custom_in(dir: &Path) -> Vec<WallpaperEntry> {
     .into_iter()
     .map(|(id, path)| {
       let name = names.get(&id).cloned().unwrap_or_else(|| id.clone());
+      let path_str = path.to_str().unwrap_or_default().to_string();
       WallpaperEntry {
         kind: KIND_CUSTOM.to_string(),
         name,
-        path: path.to_str().unwrap_or_default().to_string(),
+        path: path_str.clone(),
+        path_dark: path_str,
         id,
       }
     })
@@ -472,6 +506,7 @@ pub fn add(source: &Path, name: Option<&str>) -> Result<WallpaperEntry, String> 
     id,
     name: display,
     path: dest.to_str().unwrap_or_default().to_string(),
+    path_dark: dest.to_str().unwrap_or_default().to_string(),
   })
 }
 
@@ -576,6 +611,129 @@ pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String,
     .save()
     .map_err(|e| format!("wallpaper set failed: store save failed: {}", e))?;
   Ok(fill.to_string())
+}
+
+/// Compositor settings socket (`COMPOSITOR_SOCKET` override).
+pub fn compositor_socket() -> PathBuf {
+  if let Ok(sock) = std::env::var("COMPOSITOR_SOCKET") {
+    if !sock.is_empty() {
+      return PathBuf::from(sock);
+    }
+  }
+  PathBuf::from(DEFAULT_COMPOSITOR_SOCKET)
+}
+
+/// Active theme backing the `auto` variant (`customize` domain).
+fn active_theme(store: &SettingsStore) -> String {
+  let theme = store
+    .get("customize", "theme")
+    .and_then(|v| v.as_str())
+    .unwrap_or("dark");
+  if theme == "light" {
+    "light".to_string()
+  } else {
+    "dark".to_string()
+  }
+}
+
+/// Forward a resolved image file to the compositor for the desktop
+/// crossfade. The compositor validates and loads the file itself.
+fn send_to_compositor(file: &Path) -> Result<(), String> {
+  use std::io::{BufRead, BufReader, Write};
+  use std::time::Duration;
+
+  let sock = compositor_socket();
+  let mut stream = std::os::unix::net::UnixStream::connect(&sock).map_err(|e| {
+    format!(
+      "wallpaper apply failed: compositor unreachable at {}: {}",
+      sock.display(),
+      e
+    )
+  })?;
+  let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+  let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+  let mut line = serde_json::json!({"op": "set_wallpaper", "path": file.to_string_lossy()}).to_string();
+  line.push('\n');
+  stream
+    .write_all(line.as_bytes())
+    .map_err(|e| format!("wallpaper apply failed: compositor write failed: {}", e))?;
+  stream
+    .flush()
+    .map_err(|e| format!("wallpaper apply failed: compositor write failed: {}", e))?;
+  let mut reader = BufReader::new(&stream);
+  let mut reply = String::new();
+  reader
+    .read_line(&mut reply)
+    .map_err(|e| format!("wallpaper apply failed: compositor read failed: {}", e))?;
+  let frame: serde_json::Value = serde_json::from_str(&reply)
+    .map_err(|e| format!("wallpaper apply failed: compositor reply invalid: {}", e))?;
+  if frame.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+    Ok(())
+  } else {
+    Err(format!(
+      "wallpaper apply failed: {}",
+      frame.get("error").and_then(|v| v.as_str()).unwrap_or("compositor error")
+    ))
+  }
+}
+
+/// Apply a wallpaper to the desktop: resolve the variant file, start the
+/// compositor crossfade, then persist the selection. Nothing is persisted
+/// when the compositor is unreachable. `variant` is `light`, `dark` or
+/// `auto` (follows the `customize` theme). Returns the applied entry with
+/// `path` set to the resolved file.
+pub fn apply(
+  store: &Arc<Mutex<SettingsStore>>,
+  kind: &str,
+  id: &str,
+  variant: &str,
+) -> Result<WallpaperEntry, String> {
+  if !VARIANTS.contains(&variant) {
+    return Err(format!("wallpaper apply failed: unknown variant {:?}", variant));
+  }
+  if kind != KIND_PREMADE && kind != KIND_CUSTOM {
+    return Err(format!("wallpaper apply failed: unknown kind {:?}", kind));
+  }
+  if id.is_empty() {
+    return Err("wallpaper apply failed: id must not be empty".to_string());
+  }
+  let premade = scan_premade();
+  let customs = scan_custom();
+  let list = if kind == KIND_PREMADE {
+    &premade
+  } else {
+    &customs
+  };
+  let entry = list
+    .iter()
+    .find(|e| e.id == id)
+    .cloned()
+    .ok_or_else(|| format!("wallpaper apply failed: unknown wallpaper {:?}", id))?;
+  let file = if kind == KIND_CUSTOM {
+    PathBuf::from(&entry.path)
+  } else {
+    let theme = if variant == "auto" {
+      let guard = store
+        .lock()
+        .map_err(|_| "wallpaper apply failed: store is locked".to_string())?;
+      active_theme(&guard)
+    } else {
+      variant.to_string()
+    };
+    resolve_pack_file(&premade_dir().join(id), &theme)
+      .ok_or_else(|| format!("wallpaper apply failed: no image file for {:?}", id))?
+  };
+  if !file.is_file() {
+    return Err(format!(
+      "wallpaper apply failed: file not found {:?}",
+      file
+    ));
+  }
+  send_to_compositor(&file)?;
+  set_current(store, kind, id)?;
+  let mut applied = entry;
+  applied.path = file.to_str().unwrap_or_default().to_string();
+  Ok(applied)
 }
 
 #[cfg(test)]
@@ -818,6 +976,109 @@ mod tests {
     let _ = std::fs::remove_dir_all(&dir);
   }
 
+  /// Mock compositor socket: accept one connection, read the request line,
+  /// reply with one frame. Returns the socket path.
+  fn mock_compositor(reply: serde_json::Value) -> PathBuf {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let path = std::env::temp_dir().join(format!(
+      "tontoo-compositor-mock-{}.sock",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+    std::thread::spawn(move || {
+      if let Ok((mut stream, _)) = listener.accept() {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let mut out = reply.to_string();
+        out.push('\n');
+        let _ = stream.write_all(out.as_bytes());
+      }
+    });
+    path
+  }
+
+  #[test]
+  fn apply_validates_before_touching_anything() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = temp_case("apply-validate");
+    let store = memory_store(&dir.join("settings.json"));
+    assert!(apply(&store, "premade", "FLOW", "sepia").is_err());
+    assert!(apply(&store, "orb", "FLOW", "light").is_err());
+    assert!(apply(&store, "premade", "", "light").is_err());
+    assert!(apply(&store, "premade", "MISSING", "light").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn apply_forwards_then_persists() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("apply-premade");
+    write_pack(
+      &premade,
+      "FLOW",
+      Some("name: \"Flow\"\nimages:\n  light: \"day.png\"\n  dark: \"night.png\"\n"),
+      &["day.png", "night.png"],
+    );
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("apply-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    std::env::set_var("COMPOSITOR_SOCKET", &sock);
+    let dir = temp_case("apply-store");
+    let store = memory_store(&dir.join("settings.json"));
+
+    let applied = apply(&store, "premade", "FLOW", "dark").unwrap();
+    assert_eq!(applied.id, "FLOW");
+    assert!(applied.path.ends_with("night.png"));
+    {
+      let guard = store.lock().unwrap();
+      assert_eq!(
+        current_in(&guard, &scan_premade(), &scan_custom()).map(|e| e.id),
+        Some("FLOW".to_string())
+      );
+    }
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn apply_fails_cleanly_without_compositor() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("apply-nocomp");
+    write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("apply-nocomp-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    std::env::set_var(
+      "COMPOSITOR_SOCKET",
+      "/nonexistent-wallpaper-test/compositor.sock",
+    );
+    let dir = temp_case("apply-nocomp-store");
+    let store = memory_store(&dir.join("settings.json"));
+
+    let err = apply(&store, "premade", "FLOW", "light").unwrap_err();
+    assert!(err.contains("unreachable"));
+    {
+      let guard = store.lock().unwrap();
+      assert!(current_in(&guard, &scan_premade(), &scan_custom()).is_none());
+    }
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
   #[test]
   fn json_shape_matches_socket_contract() {
     let entry = WallpaperEntry {
@@ -825,8 +1086,37 @@ mod tests {
       id: "mine".to_string(),
       name: "Mine".to_string(),
       path: "/tmp/mine.png".to_string(),
+      path_dark: "/tmp/mine.png".to_string(),
     };
     let value = serde_json::to_value(&entry).unwrap();
-    assert_eq!(value, json!({"kind": "custom", "id": "mine", "name": "Mine", "path": "/tmp/mine.png"}));
+    assert_eq!(value, json!({"kind": "custom", "id": "mine", "name": "Mine", "path": "/tmp/mine.png", "path_dark": "/tmp/mine.png"}));
+    // Older replies without path_dark still parse (default "").
+    let legacy: WallpaperEntry = serde_json::from_value(
+      json!({"kind": "premade", "id": "x", "name": "X", "path": "/tmp/x.png"}),
+    )
+    .unwrap();
+    assert_eq!(legacy.path_dark, "");
+  }
+
+  #[test]
+  fn variant_files_resolve_with_fallback() {
+    let dir = temp_case("variants");
+    write_pack(
+      &dir,
+      "DUO",
+      Some("name: \"Duo\"\nimages:\n  light: \"day.png\"\n  dark: \"night.png\"\n"),
+      &["day.png", "night.png"],
+    );
+    write_pack(&dir, "SOLO", Some("name: \"Solo\"\n"), &["only.png"]);
+    let pack = dir.join("DUO");
+    assert!(resolve_pack_file(&pack, "light").unwrap().ends_with("day.png"));
+    assert!(resolve_pack_file(&pack, "dark").unwrap().ends_with("night.png"));
+    let solo = dir.join("SOLO");
+    assert!(resolve_pack_file(&solo, "dark").unwrap().ends_with("only.png"));
+    let entries = scan_premade_in(&dir);
+    let duo = entries.iter().find(|e| e.id == "DUO").unwrap();
+    assert!(duo.path.ends_with("day.png"));
+    assert!(duo.path_dark.ends_with("night.png"));
+    let _ = std::fs::remove_dir_all(&dir);
   }
 }

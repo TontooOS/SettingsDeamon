@@ -2,11 +2,11 @@
 
 The wallpaper backend scans premade packs and user custom wallpapers and
 persists the selection. `wallpaper_get` is a public read op;
-`wallpaper_set_current`, `wallpaper_set_fill` and `wallpaper_add` are
-private write ops reserved for the Settings app
-(`com.tontoo.systemsettings`), like the `wifi_*` write ops. Nothing here
-applies the wallpaper to the desktop; that stays a later step (wallpaper
-engine). Display only for now.
+`wallpaper_set_current`, `wallpaper_set_fill`, `wallpaper_add` and
+`wallpaper_apply` are private write ops reserved for the Settings app
+(`com.tontoo.systemsettings`), like the `wifi_*` write ops.
+`wallpaper_apply` forwards the resolved file to the compositor for the
+desktop crossfade; the other writes persist the selection only.
 
 ## Sources
 
@@ -46,8 +46,12 @@ pub struct WallpaperEntry {
   pub id: String,
   pub name: String,
   pub path: String,
+  pub path_dark: String,
 }
 ```
+
+`path` is the light (default) image, `path_dark` the dark variant (same
+file when the pack ships only one image; customs always mirror `path`).
 
 ```rust
 pub struct WallpaperState {
@@ -74,6 +78,11 @@ pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String,
   is missing, undecodable, or the registry fails.
 - `set_current` resolves the kind/id against fresh scans and returns
   `Err` for unknown kinds or ids. `set_fill` rejects unknown modes.
+- `apply` takes `light`, `dark` or `auto` (`auto` follows the
+  `customize` theme), resolves the variant file, forwards it to the
+  compositor socket (`COMPOSITOR_SOCKET` or
+  `/run/tontoo-compositor.sock`, `set_wallpaper` op), then persists the
+  selection. Nothing is persisted when the compositor is unreachable.
 - Op names live with the backend
   (`settings_daemon::wallpaper::OP_WALLPAPER_*`).
 
@@ -83,6 +92,7 @@ pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String,
 printf '{"id": 1, "op": "wallpaper_get"}\n' | socat - UNIX-CONNECT:/run/tontoo-settings.sock
 printf '{"id": 2, "op": "wallpaper_add", "params": {"path": "/tmp/photo.jpg"}}\n' | socat - UNIX-CONNECT:/run/tontoo-settings.sock
 printf '{"id": 3, "op": "wallpaper_set_fill", "params": {"fill": "tile"}}\n' | socat - UNIX-CONNECT:/run/tontoo-settings.sock
+printf '{"id": 4, "op": "wallpaper_apply", "params": {"kind": "premade", "id": "SONOMA", "variant": "auto"}}\n' | socat - UNIX-CONNECT:/run/tontoo-settings.sock
 ```
 
 ## Cross References

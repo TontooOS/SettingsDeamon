@@ -16,7 +16,8 @@ use crate::store::SettingsStore;
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
-//                 | "wallpaper_set_fill" | "wallpaper_add",
+//                 | "wallpaper_set_fill" | "wallpaper_add"
+//                 | "wallpaper_apply",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -41,6 +42,8 @@ use crate::store::SettingsStore;
 // `wallpaper_set_current`, `wallpaper_set_fill` and `wallpaper_add` are
 // private write ops with the same visibility rule: selection persistence
 // only, nothing here applies the wallpaper to the desktop.
+// `wallpaper_apply` resolves the variant file and forwards it to the
+// compositor for the desktop crossfade, then persists the selection.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
@@ -248,6 +251,18 @@ fn dispatch(
       let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
       let name = params.get("name").and_then(|v| v.as_str());
       match crate::wallpaper::add(Path::new(path), name) {
+        Ok(entry) => success_frame(
+          id,
+          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::wallpaper::OP_WALLPAPER_APPLY => {
+      let kind = params.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+      let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+      let variant = params.get("variant").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::wallpaper::apply(store, kind, entry_id, variant) {
         Ok(entry) => success_frame(
           id,
           serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
@@ -480,6 +495,21 @@ mod tests {
     );
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("file not found"));
+  }
+
+  #[test]
+  fn wallpaper_apply_rejects_unknown_variant() {
+    let store = memory_store();
+    let frame = dispatch(
+      15,
+      crate::wallpaper::OP_WALLPAPER_APPLY,
+      &serde_json::json!({"kind": "premade", "id": "FLOW", "variant": "sepia"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unknown variant"));
   }
 
   #[cfg(target_os = "linux")]

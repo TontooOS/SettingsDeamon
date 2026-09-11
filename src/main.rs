@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use settings_daemon::{hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper};
+use settings_daemon::{display, hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper};
 
 fn main() {
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -26,6 +26,12 @@ fn main() {
     Ok(Some(entry)) => log::info!("wallpaper pushed to compositor: {} ({})", entry.name, entry.path),
     Ok(None) => log::info!("no wallpaper configured, compositor keeps its default"),
     Err(e) => log::warn!("wallpaper push skipped ({})", e),
+  }
+
+  // Push the stored display settings (best effort, same ordering logic).
+  match display::push_to_compositor(&store) {
+    Ok(()) => log::info!("display settings pushed to compositor"),
+    Err(e) => log::warn!("display push skipped ({})", e),
   }
 
   // Refresh the hardware snapshot on every start. Missing sources degrade

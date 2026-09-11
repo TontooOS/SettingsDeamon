@@ -67,6 +67,10 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Wallpaper delete. `wallpaper_delete` op (customs only,
+  never premade): pre-switches to Tahoe Lake (auto) when the deleted
+  wallpaper is current, then removes the file, the CoreData entry and
+  refreshes `storage.fico`. See [Wallpaper.md](Wallpaper.md).
 - 2026-09-11: Wallpaper apply. `wallpaper_apply` op (light/dark/auto
   variant, `auto` follows the `customize` theme) forwards the resolved
   file to the compositor socket for the desktop crossfade, then persists

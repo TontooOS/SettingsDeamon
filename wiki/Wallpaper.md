@@ -70,12 +70,20 @@ pub fn state(store: &SettingsStore) -> WallpaperState;
 pub fn set_current(store: &Arc<Mutex<SettingsStore>>, kind: &str, id: &str)
   -> Result<Option<WallpaperEntry>, String>;
 pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String, String>;
+pub fn delete(store: &Arc<Mutex<SettingsStore>>, id: &str) -> Result<bool, String>;
 ```
 
 - `add` creates the customs directory on demand, converts to PNG,
   registers in CoreData and refreshes `storage.fico`. Returns `Err`
   without side effects (a half-written file is removed) when the source
   is missing, undecodable, or the registry fails.
+- `delete` removes a user custom by id only: premade packs are never
+  deletable, only the user wallpaper folder is touched. When the deleted
+  wallpaper is the current selection, it first switches to Tahoe Lake
+  (auto) on the desktop, then removes the file, the CoreData entry and
+  refreshes `storage.fico`. Returns whether a pre-switch happened.
+  Aborts with an error (nothing removed) when the compositor is
+  unreachable while a switch is required.
 - `set_current` resolves the kind/id against fresh scans and returns
   `Err` for unknown kinds or ids. `set_fill` rejects unknown modes.
 - `apply` takes `light`, `dark` or `auto` (`auto` follows the

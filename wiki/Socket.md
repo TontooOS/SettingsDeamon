@@ -34,6 +34,7 @@ Request:
 | `wallpaper_set_fill` | Private: `{"fill"}` returns `{"fill"}` |
 | `wallpaper_add` | Private: `{"path", "name"?}` converts to PNG and returns the new entry |
 | `wallpaper_apply` | Private: `{"kind", "id", "variant"}` applies to the desktop, returns the applied entry |
+| `wallpaper_delete` | Private: `{"id"}` deletes a custom (pre-switch to Tahoe Lake when current), returns `{"deleted", "switched"}` |
 
 Success reply:
 
@@ -64,7 +65,8 @@ Rules:
   follow the same visibility rule (Settings app only);
   `wallpaper_get` is public. `wallpaper_apply` (Settings app only)
   resolves the variant file, forwards it to the compositor for the
-  desktop crossfade, then persists the selection.
+  desktop crossfade, then persists the selection. `wallpaper_delete`
+  removes a user custom (pre-switch to Tahoe Lake when current).
 
 ## API
 
@@ -99,8 +101,8 @@ WiFi op names live with the backend (`settings_daemon::wifi::OP_WIFI_*`):
 and `customize_set` (private, Settings app only). Wallpaper op names live
 with the backend (`settings_daemon::wallpaper::OP_WALLPAPER_*`):
 `wallpaper_get` (public) and `wallpaper_set_current`,
-`wallpaper_set_fill`, `wallpaper_add`, `wallpaper_apply` (private,
-Settings app only).
+`wallpaper_set_fill`, `wallpaper_add`, `wallpaper_apply`,
+`wallpaper_delete` (private, Settings app only).
 Request params arrive as an optional `params` object next to `id` and
 `op`.
 

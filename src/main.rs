@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use settings_daemon::{hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket};
+use settings_daemon::{hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper};
 
 fn main() {
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -17,6 +17,15 @@ fn main() {
   match store.load() {
     Ok(()) => log::info!("store loaded from {:?}", config.store_path),
     Err(e) => log::warn!("failed to load store from {:?} ({}), starting empty", config.store_path, e),
+  }
+
+  // Push the configured wallpaper to the compositor (best effort, covers
+  // the compositor-already-running order; the compositor queries us when
+  // it starts later). Fresh configs resolve Tahoe Lake.
+  match wallpaper::push_current_to_compositor(&store) {
+    Ok(Some(entry)) => log::info!("wallpaper pushed to compositor: {} ({})", entry.name, entry.path),
+    Ok(None) => log::info!("no wallpaper configured, compositor keeps its default"),
+    Err(e) => log::warn!("wallpaper push skipped ({})", e),
   }
 
   // Refresh the hardware snapshot on every start. Missing sources degrade

@@ -31,6 +31,9 @@ pub const CUSTOM_DIR_NAME: &str = "com.tontoo.wallpaper";
 /// Registry mirror next to the custom files.
 pub const STORAGE_FICO: &str = "storage.fico";
 
+/// Pack selected when nothing is configured yet (fresh installs boot it).
+pub const DEFAULT_PACK: &str = "THAOELAKE";
+
 /// Store domain holding the current wallpaper and the fill mode.
 pub const DOMAIN: &str = "wallpaper";
 pub const KEY_CURRENT_KIND: &str = "current_kind";
@@ -42,6 +45,7 @@ pub const OP_WALLPAPER_SET_CURRENT: &str = "wallpaper_set_current";
 pub const OP_WALLPAPER_SET_FILL: &str = "wallpaper_set_fill";
 pub const OP_WALLPAPER_ADD: &str = "wallpaper_add";
 pub const OP_WALLPAPER_APPLY: &str = "wallpaper_apply";
+pub const OP_WALLPAPER_DELETE: &str = "wallpaper_delete";
 
 /// Kind tag for premade pack entries.
 pub const KIND_PREMADE: &str = "premade";
@@ -434,6 +438,71 @@ fn container() -> Result<coredata::PersistentContainer, String> {
   .map_err(|e| e.to_string())
 }
 
+/// Delete the custom registry entry. Returns true when one existed.
+fn delete_custom_entry(id: &str) -> Result<bool, String> {
+  let mut store = container()?;
+  let removed = {
+    let mut ctx = store.view_context();
+    let objects = ctx
+      .fetch_all(CUSTOM_WALLPAPER_ENTITY)
+      .map_err(|e| e.to_string())?;
+    let ids: Vec<String> = objects
+      .iter()
+      .filter(|o| o.get_str("id") == Some(id))
+      .map(|o| o.object_id.clone())
+      .collect();
+    for object_id in &ids {
+      ctx.delete(object_id).map_err(|e| e.to_string())?;
+    }
+    if !ids.is_empty() {
+      ctx.save().map_err(|e| e.to_string())?;
+    }
+    !ids.is_empty()
+  };
+  store.save().map_err(|e| e.to_string())?;
+  Ok(removed)
+}
+
+/// Delete a user custom wallpaper by id. Premade packs are never
+/// deletable (only the user wallpaper folder is touched). When the
+/// deleted wallpaper is the current selection, first switch to Tahoe
+/// Lake (auto) on the desktop, then remove the file, the CoreData entry
+/// and refresh `storage.fico`. Returns whether a pre-switch happened.
+/// Aborts with an error (nothing removed) when the compositor is
+/// unreachable while a switch is required.
+pub fn delete(store: &Arc<Mutex<SettingsStore>>, id: &str) -> Result<bool, String> {
+  if id.is_empty() {
+    return Err("wallpaper delete failed: id must not be empty".to_string());
+  }
+  let dir = custom_dir();
+  let customs = scan_custom_in(&dir);
+  let entry = customs
+    .iter()
+    .find(|e| e.id == id)
+    .cloned()
+    .ok_or_else(|| format!("wallpaper delete failed: unknown custom wallpaper {:?}", id))?;
+  let is_current = {
+    let guard = store
+      .lock()
+      .map_err(|_| "wallpaper delete failed: store is locked".to_string())?;
+    current_in(&guard, &scan_premade(), &customs)
+      .map(|current| current.kind == KIND_CUSTOM && current.id == id)
+      .unwrap_or(false)
+  };
+  let mut switched = false;
+  if is_current {
+    apply(store, KIND_PREMADE, DEFAULT_PACK, "auto")?;
+    switched = true;
+  }
+  let file = PathBuf::from(&entry.path);
+  std::fs::remove_file(&file)
+    .map_err(|e| format!("wallpaper delete failed: cannot remove {:?}: {}", file, e))?;
+  let _ = delete_custom_entry(id);
+  refresh_storage(&dir)
+    .map_err(|e| format!("wallpaper delete failed: storage mirror failed: {}", e))?;
+  Ok(switched)
+}
+
 /// Register the custom wallpaper in CoreData (write-only registry, the
 /// listing reads the files plus `storage.fico`).
 fn register_custom(id: &str, name: &str, filename: &str) -> Result<(), String> {
@@ -511,7 +580,9 @@ pub fn add(source: &Path, name: Option<&str>) -> Result<WallpaperEntry, String> 
 }
 
 /// Resolve the configured current wallpaper against fresh scans.
-/// Unknown ids yield `None` (shows "No wallpaper set").
+/// A fresh config (both keys absent) selects `DEFAULT_PACK` when the pack
+/// exists, so new installs boot Tahoe Lake. Stored but unknown ids yield
+/// `None` (shows "No wallpaper set").
 pub fn current_in(
   store: &SettingsStore,
   premade: &[WallpaperEntry],
@@ -525,6 +596,12 @@ pub fn current_in(
     .get(DOMAIN, KEY_CURRENT_ID)
     .and_then(|v| v.as_str())
     .unwrap_or("");
+  if kind.is_empty() && id.is_empty() {
+    return premade
+      .iter()
+      .find(|e| e.id == DEFAULT_PACK)
+      .cloned();
+  }
   if id.is_empty() {
     return None;
   }
@@ -638,7 +715,7 @@ fn active_theme(store: &SettingsStore) -> String {
 
 /// Forward a resolved image file to the compositor for the desktop
 /// crossfade. The compositor validates and loads the file itself.
-fn send_to_compositor(file: &Path) -> Result<(), String> {
+pub(crate) fn send_to_compositor(file: &Path) -> Result<(), String> {
   use std::io::{BufRead, BufReader, Write};
   use std::time::Duration;
 
@@ -675,6 +752,28 @@ fn send_to_compositor(file: &Path) -> Result<(), String> {
       frame.get("error").and_then(|v| v.as_str()).unwrap_or("compositor error")
     ))
   }
+}
+
+/// Push the configured current wallpaper to the compositor (startup
+/// sync, best effort). Resolves like `current_in`, honoring the
+/// `DEFAULT_PACK` fallback, and forwards the entry file. Returns the
+/// pushed entry, or `None` when nothing is configured. Errors when the
+/// compositor is unreachable or the file is missing.
+pub fn push_current_to_compositor(store: &SettingsStore) -> Result<Option<WallpaperEntry>, String> {
+  let premade = scan_premade();
+  let customs = scan_custom();
+  let Some(entry) = current_in(store, &premade, &customs) else {
+    return Ok(None);
+  };
+  let file = PathBuf::from(&entry.path);
+  if !file.is_file() {
+    return Err(format!(
+      "wallpaper push failed: file not found {:?}",
+      file
+    ));
+  }
+  send_to_compositor(&file)?;
+  Ok(Some(entry))
 }
 
 /// Apply a wallpaper to the desktop: resolve the variant file, start the
@@ -953,6 +1052,66 @@ mod tests {
   }
 
   #[test]
+  fn fresh_config_defaults_to_tahoe_lake() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("default-premade");
+    write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
+    write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("default-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let dir = temp_case("default-store");
+    let store = memory_store(&dir.join("settings.json"));
+
+    let guard = store.lock().unwrap();
+    let current = current_in(&guard, &scan_premade(), &scan_custom());
+    assert_eq!(current.map(|e| e.id), Some("THAOELAKE".to_string()));
+    drop(guard);
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn push_forwards_default_and_skips_gracefully() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("push-premade");
+    write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("push-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let dir = temp_case("push-store");
+    let store = SettingsStore::new(dir.join("settings.json"));
+
+    // No compositor: graceful error, nothing persisted.
+    std::env::set_var(
+      "COMPOSITOR_SOCKET",
+      "/nonexistent-wallpaper-test/compositor.sock",
+    );
+    assert!(push_current_to_compositor(&store).is_err());
+
+    // Mock compositor: default pushes Tahoe Lake.
+    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    std::env::set_var("COMPOSITOR_SOCKET", &sock);
+    let pushed = push_current_to_compositor(&store).unwrap().unwrap();
+    assert_eq!(pushed.id, "THAOELAKE");
+
+    // Empty scans: nothing to push.
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", "/nonexistent-wallpaper-test");
+    assert!(push_current_to_compositor(&store).unwrap().is_none());
+
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
   fn full_add_flow_with_temp_home() {
     let _guard = ENV_LOCK.lock().unwrap();
     // Exercise add() end to end except the CoreData registry write:
@@ -977,14 +1136,17 @@ mod tests {
   }
 
   /// Mock compositor socket: accept one connection, read the request line,
-  /// reply with one frame. Returns the socket path.
+  /// reply with one frame. Returns the socket path (unique per call).
   fn mock_compositor(reply: serde_json::Value) -> PathBuf {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
-      "tontoo-compositor-mock-{}.sock",
-      std::process::id()
+      "tontoo-compositor-mock-{}-{}.sock",
+      std::process::id(),
+      NEXT_ID.fetch_add(1, Ordering::SeqCst)
     ));
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).unwrap();
@@ -1074,6 +1236,124 @@ mod tests {
     std::env::remove_var("TONTOO_WALLPAPERS_DIR");
     std::env::remove_var("SETTINGS_WALLPAPER_DIR");
     std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  fn sandbox_home(name: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("tontoo-home-{}", name));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::env::set_var("HOME", &home);
+    home
+  }
+
+  fn write_custom_png(dir: &Path, name: &str) -> PathBuf {
+    let img = image::RgbImage::new(4, 3);
+    let path = dir.join(name);
+    image::DynamicImage::ImageRgb8(img)
+      .save_with_format(&path, image::ImageFormat::Png)
+      .unwrap();
+    path
+  }
+
+  #[test]
+  fn delete_rejects_bad_ids() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = temp_case("delete-validate");
+    let store = memory_store(&dir.join("settings.json"));
+    assert!(delete(&store, "").is_err());
+    assert!(delete(&store, "ghost").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn delete_non_current_removes_file_and_mirror() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let home = sandbox_home("delete-plain");
+    let customs = temp_case("delete-plain-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let file = write_custom_png(&customs, "mine.png");
+    let dir = temp_case("delete-plain-store");
+    let store = memory_store(&dir.join("settings.json"));
+
+    let switched = delete(&store, "mine").unwrap();
+    assert!(!switched);
+    assert!(!file.exists());
+    assert!(scan_custom_in(&customs).is_empty());
+
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("HOME");
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn delete_current_switches_to_tahoe_lake_first() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let home = sandbox_home("delete-current");
+    let premade = temp_case("delete-current-premade");
+    write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("delete-current-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let file = write_custom_png(&customs, "mine.png");
+    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    std::env::set_var("COMPOSITOR_SOCKET", &sock);
+    let dir = temp_case("delete-current-store");
+    let store = memory_store(&dir.join("settings.json"));
+    set_current(&store, "custom", "mine").unwrap();
+
+    let switched = delete(&store, "mine").unwrap();
+    assert!(switched);
+    assert!(!file.exists());
+    {
+      let guard = store.lock().unwrap();
+      assert_eq!(
+        current_in(&guard, &scan_premade(), &scan_custom()).map(|e| e.id),
+        Some("THAOELAKE".to_string())
+      );
+    }
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    std::env::remove_var("HOME");
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn delete_current_aborts_when_compositor_down() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let home = sandbox_home("delete-abort");
+    let premade = temp_case("delete-abort-premade");
+    write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("delete-abort-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let file = write_custom_png(&customs, "mine.png");
+    std::env::set_var(
+      "COMPOSITOR_SOCKET",
+      "/nonexistent-wallpaper-test/compositor.sock",
+    );
+    let dir = temp_case("delete-abort-store");
+    let store = memory_store(&dir.join("settings.json"));
+    set_current(&store, "custom", "mine").unwrap();
+
+    let err = delete(&store, "mine").unwrap_err();
+    assert!(err.contains("unreachable"));
+    assert!(file.exists());
+
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    std::env::remove_var("HOME");
+    let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&premade);
     let _ = std::fs::remove_dir_all(&customs);
     let _ = std::fs::remove_dir_all(&dir);

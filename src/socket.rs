@@ -17,7 +17,7 @@ use crate::store::SettingsStore;
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
-//                 | "wallpaper_apply",
+//                 | "wallpaper_apply" | "wallpaper_delete",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -270,6 +270,13 @@ fn dispatch(
         Err(e) => error_frame(id, e),
       }
     }
+    crate::wallpaper::OP_WALLPAPER_DELETE => {
+      let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::wallpaper::delete(store, entry_id) {
+        Ok(switched) => success_frame(id, serde_json::json!({"deleted": true, "switched": switched})),
+        Err(e) => error_frame(id, e),
+      }
+    }
     _ => error_frame(id, format!("unknown op: {:?}", op)),
   }
 }
@@ -510,6 +517,21 @@ mod tests {
     );
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("unknown variant"));
+  }
+
+  #[test]
+  fn wallpaper_delete_rejects_unknown_id() {
+    let store = memory_store();
+    let frame = dispatch(
+      16,
+      crate::wallpaper::OP_WALLPAPER_DELETE,
+      &serde_json::json!({"id": "ghost"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unknown custom wallpaper"));
   }
 
   #[cfg(target_os = "linux")]

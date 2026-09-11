@@ -17,7 +17,8 @@ use crate::store::SettingsStore;
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
-//                 | "wallpaper_apply" | "wallpaper_delete",
+//                 | "wallpaper_apply" | "wallpaper_delete"
+//                 | "display_get" | "display_set",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -274,6 +275,32 @@ fn dispatch(
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::delete(store, entry_id) {
         Ok(switched) => success_frame(id, serde_json::json!({"deleted": true, "switched": switched})),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::display::OP_DISPLAY_GET => match store
+      .lock()
+      .map_err(|_| "display get failed: store is locked".to_string())
+      .and_then(|guard| crate::display::get(&guard))
+    {
+      Ok(state) => success_frame(
+        id,
+        serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+      ),
+      Err(e) => error_frame(id, e),
+    },
+    crate::display::OP_DISPLAY_SET => {
+      let output = params.get("output").and_then(|v| v.as_str());
+      let width = params.get("width").and_then(|v| v.as_i64());
+      let height = params.get("height").and_then(|v| v.as_i64());
+      let refresh = params.get("refresh").and_then(|v| v.as_u64()).map(|v| v as u32);
+      let brightness = params.get("brightness").and_then(|v| v.as_f64());
+      let night_light = params.get("night_light").and_then(|v| v.as_bool());
+      match crate::display::set(store, output, width, height, refresh, brightness, night_light) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
         Err(e) => error_frame(id, e),
       }
     }

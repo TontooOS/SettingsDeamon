@@ -94,6 +94,17 @@ impl SettingsStore {
     names.sort();
     names
   }
+
+  /// Sorted key names of one domain (empty when the domain is missing).
+  pub fn keys(&self, domain: &str) -> Vec<String> {
+    let mut names: Vec<String> = self
+      .domains
+      .get(domain)
+      .map(|keys| keys.keys().cloned().collect())
+      .unwrap_or_default();
+    names.sort();
+    names
+  }
 }
 
 #[cfg(test)]

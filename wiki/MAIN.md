@@ -27,6 +27,7 @@ known networks in CoreData and the socket server.
 | Socket | [Socket.md](Socket.md) | Unix socket server basis and protocol roadmap |
 | WiFi | [Wifi.md](Wifi.md) | WiFi backend, known networks in CoreData, public/private socket ops |
 | Customize | [Customize.md](Customize.md) | Customize backend, `customize` store domain, public/private socket ops |
+| Wallpaper | [Wallpaper.md](Wallpaper.md) | Wallpaper backend, premade packs, customs registry, public/private socket ops |
 
 ## Quick Start
 
@@ -66,6 +67,14 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Wallpaper backend. `wallpaper` module (premade packs from
+  `/System/User/Wallpapers`, customs in
+  `~/Library/Preferences/com.tontoo.wallpaper/` as PNG with CoreData
+  `CustomWallpaper` registry plus `storage.fico` mirror, current/fill in
+  the `wallpaper` store domain), socket ops `wallpaper_get` (public)
+  plus `wallpaper_set_current`/`wallpaper_set_fill`/`wallpaper_add`
+  (private, Settings app only; selection persistence only, no desktop
+  apply). See [Wallpaper.md](Wallpaper.md).
 - 2026-09-11: Customize backend. `customize` module (`customize` store
   domain with `wallpaper`/`accent`/`theme`, validated read overlay and
   partial-write `set` with persistence), socket ops `customize_get`

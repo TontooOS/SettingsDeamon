@@ -14,7 +14,9 @@ use crate::store::SettingsStore;
 //                 | "wifi_list" | "wifi_status"
 //                 | "wifi_connect" | "wifi_disconnect"
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
-//                 | "customize_get" | "customize_set",
+//                 | "customize_get" | "customize_set"
+//                 | "wallpaper_get" | "wallpaper_set_current"
+//                 | "wallpaper_set_fill" | "wallpaper_add",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -33,13 +35,20 @@ use crate::store::SettingsStore;
 // `customize_set` is a private write op with the same visibility rule as
 // the `wifi_*` write ops: partial `{"wallpaper"?, "accent"?, "theme"?}`
 // params, validated before anything is persisted.
+//
+// `wallpaper_get` is a public read op returning the full wallpaper state
+// (`current`, `fill`, `customs`, `premade`).
+// `wallpaper_set_current`, `wallpaper_set_fill` and `wallpaper_add` are
+// private write ops with the same visibility rule: selection persistence
+// only, nothing here applies the wallpaper to the desktop.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
 pub const OP_GET_OS: &str = "get_os";
 
 /// Socket server with the read protocol. One thread per connection shares
-/// the store so `customize_set` writes are visible to every client.
+/// the store so `customize_set` and wallpaper selection writes are visible
+/// to every client.
 #[cfg(target_os = "linux")]
 pub fn run_server(
   config: &DaemonConfig,
@@ -209,6 +218,43 @@ fn dispatch(
         Err(e) => error_frame(id, e),
       }
     }
+    crate::wallpaper::OP_WALLPAPER_GET => match store.lock() {
+      Ok(guard) => success_frame(
+        id,
+        serde_json::to_value(crate::wallpaper::state(&guard))
+          .unwrap_or(serde_json::Value::Null),
+      ),
+      Err(_) => error_frame(id, "wallpaper get failed: store is locked".to_string()),
+    },
+    crate::wallpaper::OP_WALLPAPER_SET_CURRENT => {
+      let kind = params.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+      let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::wallpaper::set_current(store, kind, entry_id) {
+        Ok(entry) => success_frame(
+          id,
+          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::wallpaper::OP_WALLPAPER_SET_FILL => {
+      let fill = params.get("fill").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::wallpaper::set_fill(store, fill) {
+        Ok(applied) => success_frame(id, serde_json::json!({"fill": applied})),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::wallpaper::OP_WALLPAPER_ADD => {
+      let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+      let name = params.get("name").and_then(|v| v.as_str());
+      match crate::wallpaper::add(Path::new(path), name) {
+        Ok(entry) => success_frame(
+          id,
+          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
     _ => error_frame(id, format!("unknown op: {:?}", op)),
   }
 }
@@ -361,6 +407,79 @@ mod tests {
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("unknown theme"));
     let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
+  }
+
+  #[test]
+  fn wallpaper_get_returns_state_shape() {
+    let store = memory_store();
+    let frame = dispatch(
+      10,
+      crate::wallpaper::OP_WALLPAPER_GET,
+      &no_params(),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], true);
+    assert!(frame["result"]["premade"].is_array());
+    assert!(frame["result"]["customs"].is_array());
+    assert_eq!(frame["result"]["fill"], crate::wallpaper::DEFAULT_FILL);
+  }
+
+  #[test]
+  fn wallpaper_set_fill_roundtrip_and_rejects_unknown() {
+    let store = memory_store();
+    let frame = dispatch(
+      11,
+      crate::wallpaper::OP_WALLPAPER_SET_FILL,
+      &serde_json::json!({"fill": "tile"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["result"]["fill"], "tile");
+    let frame = dispatch(
+      12,
+      crate::wallpaper::OP_WALLPAPER_SET_FILL,
+      &serde_json::json!({"fill": "melt"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unknown fill mode"));
+    let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
+  }
+
+  #[test]
+  fn wallpaper_set_current_rejects_unknown() {
+    let store = memory_store();
+    let frame = dispatch(
+      13,
+      crate::wallpaper::OP_WALLPAPER_SET_CURRENT,
+      &serde_json::json!({"kind": "orb", "id": "FLOW"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unknown kind"));
+  }
+
+  #[test]
+  fn wallpaper_add_rejects_missing_file() {
+    let store = memory_store();
+    let frame = dispatch(
+      14,
+      crate::wallpaper::OP_WALLPAPER_ADD,
+      &serde_json::json!({"path": "/nonexistent-wallpaper-test/missing.png"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("file not found"));
   }
 
   #[cfg(target_os = "linux")]

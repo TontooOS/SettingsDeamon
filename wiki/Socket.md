@@ -29,6 +29,10 @@ Request:
 | `wifi_forget` | Private: `{"ssid"}` returns `{"forgotten": bool}` |
 | `customize_get` | Effective customization (`{"wallpaper", "accent", "theme"}`) |
 | `customize_set` | Private: partial `{"wallpaper"?, "accent"?, "theme"?}` returns the effective settings |
+| `wallpaper_get` | Full wallpaper state (`{"current", "fill", "customs", "premade"}`) |
+| `wallpaper_set_current` | Private: `{"kind", "id"}` returns the selected entry |
+| `wallpaper_set_fill` | Private: `{"fill"}` returns `{"fill"}` |
+| `wallpaper_add` | Private: `{"path", "name"?}` converts to PNG and returns the new entry |
 
 Success reply:
 
@@ -55,6 +59,10 @@ Rules:
 - `customize_set` follows the same visibility rule as the `wifi_*` write
   ops (Settings app only); `customize_get` is public. Invalid values are
   rejected with `ok: false` and leave the store untouched.
+- `wallpaper_set_current`, `wallpaper_set_fill` and `wallpaper_add`
+  follow the same visibility rule (Settings app only);
+  `wallpaper_get` is public. Selection persistence only: nothing here
+  applies the wallpaper to the desktop.
 
 ## API
 
@@ -86,8 +94,12 @@ WiFi op names live with the backend (`settings_daemon::wifi::OP_WIFI_*`):
 `wifi_disconnect`, `wifi_enable`, `wifi_disable`, `wifi_forget`
 (private, Settings app only). Customize op names live with the backend
 (`settings_daemon::customize::OP_CUSTOMIZE_*`): `customize_get` (public)
-and `customize_set` (private, Settings app only). Request params arrive
-as an optional `params` object next to `id` and `op`.
+and `customize_set` (private, Settings app only). Wallpaper op names live
+with the backend (`settings_daemon::wallpaper::OP_WALLPAPER_*`):
+`wallpaper_get` (public) and `wallpaper_set_current`,
+`wallpaper_set_fill`, `wallpaper_add` (private, Settings app only).
+Request params arrive as an optional `params` object next to `id` and
+`op`.
 
 ## Roadmap
 
@@ -120,4 +132,5 @@ settings_daemon::socket::run_server(&config, store, libs)?;
 - [Os.md](Os.md) – content behind `get_os`
 - [Store.md](Store.md) – backing data for the customize dispatch
 - [Customize.md](Customize.md) – `customize` domain, validation and ops
+- [Wallpaper.md](Wallpaper.md) – wallpaper state, customs registry and ops
 - [Library.md](Library.md) – registry for future dispatch

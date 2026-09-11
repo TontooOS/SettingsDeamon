@@ -27,3 +27,6 @@ coredata = { path = "../../TontooLibs/CoreData" }
 # Fish Config (.fico) via the TontooOS system SDK (local checkout path,
 # `/Library/System/sdk` on the target system).
 sdk = { path = "../../TontooLibs/SDK", features = ["FishFile"] }
+# Wallpaper backend: decode uploads (png/jpeg/webp) and store PNGs.
+# Same version and feature set the compositor uses (shared cargo cache).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

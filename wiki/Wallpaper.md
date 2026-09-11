@@ -23,7 +23,8 @@ webp and every format the `image` crate reads) and stored as PNG with a
 sanitized unique stem (`my-photo.png`, `my-photo-2.png`, ...). Customs are
 listed from the `*.png` files on disk with display names mirrored in
 `storage.fico` next to them (`customN: id/name/filename`), falling back
-to the file stem.
+to the file stem. Premade packs sort in macOS release order (newest
+first: Golden Gate, Tahoe, Tahoe Lake, Sequoia, ...; unknown ids last).
 
 ## Registry
 

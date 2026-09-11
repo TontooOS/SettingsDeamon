@@ -54,6 +54,31 @@ pub const DEFAULT_FILL: &str = "fill";
 /// CoreData entity holding one user custom wallpaper per object.
 pub const CUSTOM_WALLPAPER_ENTITY: &str = "CustomWallpaper";
 
+/// Premade packs in macOS release order (newest first, unversioned last).
+/// Unknown pack ids sort after every known pack, by display name.
+pub const PREMADE_ORDER: &[&str] = &[
+  "GOLDENGATE",
+  "THAOE",
+  "THAOELAKE",
+  "SEQUOIA",
+  "SONOMA",
+  "VENTURA",
+  "MONTEREY",
+  "BIGSUR",
+  "CATALINA",
+  "MOJAVE",
+  "FLOW",
+  "TONTOOOS",
+];
+
+/// Sort rank of a premade pack id (unknown ids rank last).
+pub fn premade_rank(id: &str) -> usize {
+  PREMADE_ORDER
+    .iter()
+    .position(|known| *known == id)
+    .unwrap_or(PREMADE_ORDER.len())
+}
+
 /// One listed wallpaper: a premade pack or a user custom file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WallpaperEntry {
@@ -154,8 +179,9 @@ fn resolve_pack_image(dir: &Path) -> Option<PathBuf> {
   files.into_iter().next()
 }
 
-/// Premade packs from a directory: `(id, name, image path or "")` sorted
-/// by display name. Packs without any image are listed with an empty path.
+/// Premade packs from a directory: `(id, name, image path or "")` in
+/// macOS release order (newest first). Packs without any image are listed
+/// with an empty path.
 pub fn scan_premade_in(dir: &Path) -> Vec<WallpaperEntry> {
   let mut packs = Vec::new();
   let entries = match std::fs::read_dir(dir) {
@@ -183,7 +209,11 @@ pub fn scan_premade_in(dir: &Path) -> Vec<WallpaperEntry> {
       path: image,
     });
   }
-  packs.sort_by(|a, b| a.name.cmp(&b.name));
+  packs.sort_by(|a, b| {
+    premade_rank(&a.id)
+      .cmp(&premade_rank(&b.id))
+      .then_with(|| a.name.cmp(&b.name))
+  });
   packs
 }
 
@@ -579,8 +609,7 @@ mod tests {
   }
 
   #[test]
-  fn premade_scan_prefers_manifest_image_and_name() {
-    let dir = temp_case("premade");
+  fn premade_scan_prefers_manifest_image_and_name() {    let dir = temp_case("premade");
     write_pack(
       &dir,
       "THAOELAKE",
@@ -601,6 +630,23 @@ mod tests {
     assert!(ventura.path.ends_with("wall.jpg"));
     let empty = packs.iter().find(|p| p.id == "EMPTY").unwrap();
     assert_eq!(empty.path, "");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn premade_scan_orders_by_macos_release() {
+    let dir = temp_case("order");
+    for id in ["MOJAVE", "GOLDENGATE", "THAOELAKE", "SONOMA", "ZZZNEW", "FLOW"] {
+      write_pack(&dir, id, None, &["a.png"]);
+    }
+    let packs = scan_premade_in(&dir);
+    let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(
+      ids,
+      vec!["GOLDENGATE", "THAOELAKE", "SONOMA", "MOJAVE", "FLOW", "ZZZNEW"]
+    );
+    assert_eq!(premade_rank("GOLDENGATE"), 0);
+    assert_eq!(premade_rank("ZZZNEW"), PREMADE_ORDER.len());
     let _ = std::fs::remove_dir_all(&dir);
   }
 

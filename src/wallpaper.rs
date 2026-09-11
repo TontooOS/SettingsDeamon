@@ -866,8 +866,6 @@ mod tests {
   use serde_json::json;
   use std::path::PathBuf;
 
-  static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
   fn temp_case(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tontoo-wallpaper-{}", name));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1005,7 +1003,7 @@ mod tests {
 
   #[test]
   fn set_fill_validates_and_persists() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     // No THAOELAKE pack here: nothing configured, persist-only path.
     let premade = temp_case("fill-premade");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
@@ -1028,7 +1026,7 @@ mod tests {
 
   #[test]
   fn set_fill_forwards_live_and_fails_cleanly() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("fill-live-premade");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1067,7 +1065,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::{Arc, Mutex as StdMutex};
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("frame-premade");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1118,7 +1116,7 @@ mod tests {
 
   #[test]
   fn set_current_validates_against_scans() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("current-premade");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1151,7 +1149,7 @@ mod tests {
 
   #[test]
   fn state_lists_scans_with_defaults() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("state-premade");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1179,7 +1177,7 @@ mod tests {
 
   #[test]
   fn fresh_config_defaults_to_tahoe_lake() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("default-premade");
     write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
@@ -1202,7 +1200,7 @@ mod tests {
 
   #[test]
   fn push_forwards_default_and_skips_gracefully() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("push-premade");
     write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1239,7 +1237,7 @@ mod tests {
 
   #[test]
   fn full_add_flow_with_temp_home() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     // Exercise add() end to end except the CoreData registry write:
     // the registry needs the on-device store, the file + fico flow is
     // covered here through the pure helpers.
@@ -1291,7 +1289,7 @@ mod tests {
 
   #[test]
   fn apply_validates_before_touching_anything() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let dir = temp_case("apply-validate");
     let store = memory_store(&dir.join("settings.json"));
     assert!(apply(&store, "premade", "FLOW", "sepia").is_err());
@@ -1303,7 +1301,7 @@ mod tests {
 
   #[test]
   fn apply_forwards_then_persists() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("apply-premade");
     write_pack(
       &premade,
@@ -1340,7 +1338,7 @@ mod tests {
 
   #[test]
   fn apply_fails_cleanly_without_compositor() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let premade = temp_case("apply-nocomp");
     write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
@@ -1386,7 +1384,7 @@ mod tests {
 
   #[test]
   fn delete_rejects_bad_ids() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let dir = temp_case("delete-validate");
     let store = memory_store(&dir.join("settings.json"));
     assert!(delete(&store, "").is_err());
@@ -1396,7 +1394,7 @@ mod tests {
 
   #[test]
   fn delete_non_current_removes_file_and_mirror() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let home = sandbox_home("delete-plain");
     let customs = temp_case("delete-plain-custom");
     std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
@@ -1418,7 +1416,7 @@ mod tests {
 
   #[test]
   fn delete_current_switches_to_tahoe_lake_first() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let home = sandbox_home("delete-current");
     let premade = temp_case("delete-current-premade");
     write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);
@@ -1455,7 +1453,7 @@ mod tests {
 
   #[test]
   fn delete_current_aborts_when_compositor_down() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let home = sandbox_home("delete-abort");
     let premade = temp_case("delete-abort-premade");
     write_pack(&premade, "THAOELAKE", Some("name: \"Tahoe Lake\"\n"), &["a.png"]);

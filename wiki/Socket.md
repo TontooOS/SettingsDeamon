@@ -35,6 +35,8 @@ Request:
 | `wallpaper_add` | Private: `{"path", "name"?}` converts to PNG and returns the new entry |
 | `wallpaper_apply` | Private: `{"kind", "id", "variant"}` applies to the desktop, returns the applied entry |
 | `wallpaper_delete` | Private: `{"id"}` deletes a custom (pre-switch to Tahoe Lake when current), returns `{"deleted", "switched"}` |
+| `display_get` | Full display state (`{"outputs", "brightness", "night_light"}`) |
+| `display_set` | Private: partial `{"output"?, "width"?, "height"?, "refresh"?, "brightness"?, "night_light"?}` returns the effective state |
 
 Success reply:
 
@@ -67,6 +69,9 @@ Rules:
   resolves the variant file, forwards it to the compositor for the
   desktop crossfade, then persists the selection. `wallpaper_delete`
   removes a user custom (pre-switch to Tahoe Lake when current).
+- `display_get` is public; `display_set` follows the same visibility
+  rule (Settings app only): forwards live to the compositor, then
+  persists.
 
 ## API
 
@@ -102,7 +107,9 @@ and `customize_set` (private, Settings app only). Wallpaper op names live
 with the backend (`settings_daemon::wallpaper::OP_WALLPAPER_*`):
 `wallpaper_get` (public) and `wallpaper_set_current`,
 `wallpaper_set_fill`, `wallpaper_add`, `wallpaper_apply`,
-`wallpaper_delete` (private, Settings app only).
+`wallpaper_delete` (private, Settings app only). Display op names live
+with the backend (`settings_daemon::display::OP_DISPLAY_*`):
+`display_get` (public) and `display_set` (private, Settings app only).
 Request params arrive as an optional `params` object next to `id` and
 `op`.
 
@@ -138,4 +145,5 @@ settings_daemon::socket::run_server(&config, store, libs)?;
 - [Store.md](Store.md) – backing data for the customize dispatch
 - [Customize.md](Customize.md) – `customize` domain, validation and ops
 - [Wallpaper.md](Wallpaper.md) – wallpaper state, customs registry and ops
+- [Display.md](Display.md) – display state, brightness/night light/modes
 - [Library.md](Library.md) – registry for future dispatch

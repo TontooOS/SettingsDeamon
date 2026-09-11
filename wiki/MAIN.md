@@ -28,6 +28,7 @@ known networks in CoreData and the socket server.
 | WiFi | [Wifi.md](Wifi.md) | WiFi backend, known networks in CoreData, public/private socket ops |
 | Customize | [Customize.md](Customize.md) | Customize backend, `customize` store domain, public/private socket ops |
 | Wallpaper | [Wallpaper.md](Wallpaper.md) | Wallpaper backend, premade packs, customs registry, public/private socket ops |
+| Display | [Display.md](Display.md) | Display backend, `display` store domain, public/private socket ops |
 
 ## Quick Start
 
@@ -67,6 +68,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Display backend. `display` module (`display` store
+  domain: brightness, night light, per-output modes), socket ops
+  `display_get` (public) plus `display_set` (private, Settings app
+  only; forwards live, then persists), startup push. Shared test env
+  lock across modules (parallel env races). See [Display.md](Display.md).
 - 2026-09-11: Fill mode goes live. `apply`, boot push and `set_fill`
   forward the fill mode to the compositor (`set_wallpaper` frame);
   `set_fill` persists only after a successful forward (persist-only

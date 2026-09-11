@@ -331,8 +331,6 @@ mod tests {
   use super::*;
   use std::path::PathBuf;
 
-  static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
   fn no_params() -> serde_json::Value {
     serde_json::Value::Null
   }
@@ -486,7 +484,7 @@ mod tests {
 
   #[test]
   fn wallpaper_set_fill_roundtrip_and_rejects_unknown() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     // No THAOELAKE pack here: nothing configured, persist-only path.
     let premade = temp_case("fill-premade");
     std::fs::create_dir_all(premade.join("FLOW")).unwrap();
@@ -599,7 +597,7 @@ mod tests {
 
   #[test]
   fn display_get_needs_the_compositor() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     std::env::set_var(
       "COMPOSITOR_SOCKET",
       "/nonexistent-display-test/compositor.sock",
@@ -618,8 +616,9 @@ mod tests {
     std::env::remove_var("COMPOSITOR_SOCKET");
   }
 
-  /// Mock compositor socket replying one canned frame.
-  fn mock_display(reply: serde_json::Value) -> PathBuf {
+  /// Mock compositor socket replying canned frames in order, one per
+  /// connection.
+  fn mock_display(replies: Vec<serde_json::Value>) -> PathBuf {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -633,7 +632,10 @@ mod tests {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).unwrap();
     std::thread::spawn(move || {
-      if let Ok((mut stream, _)) = listener.accept() {
+      for reply in replies {
+        let Ok((mut stream, _)) = listener.accept() else {
+          break;
+        };
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         let _ = reader.read_line(&mut line);
@@ -647,13 +649,16 @@ mod tests {
 
   #[test]
   fn display_set_roundtrip_persists() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    let sock = mock_display(serde_json::json!({"ok": true, "result": {
-      "output": "HDMI-1",
-      "mode": {"width": 1920, "height": 1080, "refresh": 120},
-      "brightness": 80,
-      "night_light": true,
-    }}));
+    let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
+    let sock = mock_display(vec![
+      serde_json::json!({"ok": true, "result": {
+        "output": "HDMI-1",
+        "mode": {"width": 1920, "height": 1080, "refresh": 120},
+        "brightness": 80,
+        "night_light": true,
+      }}),
+      serde_json::json!({"ok": true, "result": {"outputs": []}}),
+    ]);
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     let store = memory_store();
     let frame = dispatch(
@@ -667,7 +672,10 @@ mod tests {
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["result"]["brightness"], 80);
     assert_eq!(frame["result"]["night_light"], true);
-    assert_eq!(frame["result"]["outputs"], serde_json::Value::Null);
+    assert_eq!(
+      frame["result"]["outputs"],
+      serde_json::json!([])
+    );
     std::env::remove_var("COMPOSITOR_SOCKET");
     let _ = std::fs::remove_file(&sock);
     let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");

@@ -15,6 +15,12 @@ pub use config::{
 pub use customize::{CustomizeSettings, ACCENTS, THEMES};
 pub use display::{DisplayMode, DisplayOutput, DisplayState};
 pub use wallpaper::{WallpaperEntry, WallpaperState, FILL_MODES};
+
+/// Process-wide lock serializing tests that mutate process environment
+/// (`COMPOSITOR_SOCKET`, `TONTOO_WALLPAPERS_DIR`, ...). Every env-touching
+/// test in every module must hold it, otherwise parallel tests flake.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub use hardware::{CpuInfo, GpuInfo, HardwareInfo, RamInfo, RamModule, RamType};
 pub use library::{LibraryEntry, LibraryManager};
 pub use os::OsInfo;

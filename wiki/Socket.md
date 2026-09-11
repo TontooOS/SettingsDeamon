@@ -27,6 +27,8 @@ Request:
 | `wifi_enable` | Private: `{"enabled": true}` |
 | `wifi_disable` | Private: `{"enabled": false}` |
 | `wifi_forget` | Private: `{"ssid"}` returns `{"forgotten": bool}` |
+| `customize_get` | Effective customization (`{"wallpaper", "accent", "theme"}`) |
+| `customize_set` | Private: partial `{"wallpaper"?, "accent"?, "theme"?}` returns the effective settings |
 
 Success reply:
 
@@ -50,6 +52,9 @@ Rules:
   `forget`) are private: no public client library exposes them, only the
   Settings app (`com.tontoo.systemsettings`) may call them. `wifi_list`
   and `wifi_status` are public read ops served to every client.
+- `customize_set` follows the same visibility rule as the `wifi_*` write
+  ops (Settings app only); `customize_get` is public. Invalid values are
+  rejected with `ok: false` and leave the store untouched.
 
 ## API
 
@@ -64,12 +69,11 @@ pub fn run_server(
 - Binds the unix socket after removing a stale file. Returns `Err` when the
   bind fails.
 - Loops over `listener.incoming()`, spawns one thread per connection and
-  serves the read protocol there.
+  serves the read protocol there. Each thread shares the store, so
+  `customize_set` writes are visible to every client.
 - Returns `Ok` only when the loop ends, which currently means never during
   normal operation.
 - On non-Linux targets returns `Err` with kind `Unsupported`.
-- `store` and `libs` are accepted for future write dispatch and currently
-  unused.
 
 ```rust
 pub const OP_PING: &str = "ping";
@@ -80,14 +84,15 @@ pub const OP_GET_OS: &str = "get_os";
 WiFi op names live with the backend (`settings_daemon::wifi::OP_WIFI_*`):
 `wifi_list`, `wifi_status` (public) and `wifi_connect`,
 `wifi_disconnect`, `wifi_enable`, `wifi_disable`, `wifi_forget`
-(private, Settings app only). Request params arrive as an optional
-`params` object next to `id` and `op`.
+(private, Settings app only). Customize op names live with the backend
+(`settings_daemon::customize::OP_CUSTOMIZE_*`): `customize_get` (public)
+and `customize_set` (private, Settings app only). Request params arrive
+as an optional `params` object next to `id` and `op`.
 
 ## Roadmap
 
 | Step | Description |
 |---|---|
-| Store dispatch | `get`/`set` frames on `SettingsStore` |
 | Library dispatch | Library register/reload frames |
 | Permissions | Peer credential check before writes |
 | Events | `subscribe` plus change events |
@@ -113,5 +118,6 @@ settings_daemon::socket::run_server(&config, store, libs)?;
 - [Daemon.md](Daemon.md) – configuration and runtime model
 - [Hardware.md](Hardware.md) – content behind `get_hardware`
 - [Os.md](Os.md) – content behind `get_os`
-- [Store.md](Store.md) – backing data for future dispatch
+- [Store.md](Store.md) – backing data for the customize dispatch
+- [Customize.md](Customize.md) – `customize` domain, validation and ops
 - [Library.md](Library.md) – registry for future dispatch

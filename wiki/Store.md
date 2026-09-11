@@ -76,4 +76,4 @@ assert_eq!(store.get("appearance", "theme"), Some(&serde_json::json!("dark")));
 ## Cross References
 
 - [Daemon.md](Daemon.md) – daemon load/save wiring
-- [Socket.md](Socket.md) – future get/set dispatch on top of the store
+- [Socket.md](Socket.md) – `customize_get`/`customize_set` dispatch on top of the store

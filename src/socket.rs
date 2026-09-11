@@ -13,7 +13,8 @@ use crate::store::SettingsStore;
 // Request:  {"id": 1, "op": "ping" | "get_hardware" | "get_os"
 //                 | "wifi_list" | "wifi_status"
 //                 | "wifi_connect" | "wifi_disconnect"
-//                 | "wifi_enable" | "wifi_disable" | "wifi_forget",
+//                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
+//                 | "customize_get" | "customize_set",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -26,17 +27,23 @@ use crate::store::SettingsStore;
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
+//
+// `customize_get` is a public read op returning the effective
+// customization (`{"wallpaper", "accent", "theme"}`).
+// `customize_set` is a private write op with the same visibility rule as
+// the `wifi_*` write ops: partial `{"wallpaper"?, "accent"?, "theme"?}`
+// params, validated before anything is persisted.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
 pub const OP_GET_OS: &str = "get_os";
 
-/// Socket server with the read protocol. `store` and `libs` are accepted for
-/// future write dispatch and currently unused.
+/// Socket server with the read protocol. One thread per connection shares
+/// the store so `customize_set` writes are visible to every client.
 #[cfg(target_os = "linux")]
 pub fn run_server(
   config: &DaemonConfig,
-  _store: Arc<Mutex<SettingsStore>>,
+  store: Arc<Mutex<SettingsStore>>,
   _libs: Arc<Mutex<LibraryManager>>,
 ) -> io::Result<()> {
   use std::os::unix::net::UnixListener;
@@ -51,7 +58,8 @@ pub fn run_server(
         log::info!("connection from {:?}", stream.peer_addr().ok());
         let sys = config.sys_fico_path.clone();
         let os = config.os_fico_path.clone();
-        std::thread::spawn(move || serve_connection(stream, sys, os));
+        let store = store.clone();
+        std::thread::spawn(move || serve_connection(stream, sys, os, store));
       }
       Err(e) => log::warn!("accept failed: {}", e),
     }
@@ -76,7 +84,12 @@ pub fn run_server(
 /// Serve one connection until EOF or a fatal I/O error. Malformed lines get
 /// an error frame, the connection stays open.
 #[cfg(target_os = "linux")]
-fn serve_connection(stream: std::os::unix::net::UnixStream, sys: PathBuf, os: PathBuf) {
+fn serve_connection(
+  stream: std::os::unix::net::UnixStream,
+  sys: PathBuf,
+  os: PathBuf,
+  store: Arc<Mutex<SettingsStore>>,
+) {
   use std::io::{BufRead, BufReader, Write};
 
   let mut reader = match stream.try_clone() {
@@ -92,7 +105,7 @@ fn serve_connection(stream: std::os::unix::net::UnixStream, sys: PathBuf, os: Pa
       Ok(_) => {}
       Err(_) => break,
     }
-    let frame = handle_line(&line, &sys, &os);
+    let frame = handle_line(&line, &sys, &os, &store);
     let mut out = frame.to_string();
     out.push('\n');
     if writer.write_all(out.as_bytes()).is_err() || writer.flush().is_err() {
@@ -103,7 +116,12 @@ fn serve_connection(stream: std::os::unix::net::UnixStream, sys: PathBuf, os: Pa
 
 /// Parse one request line and dispatch it. Never panics, always returns a
 /// frame with the request `id` (0 when the line has no usable id).
-fn handle_line(line: &str, sys: &Path, os: &Path) -> serde_json::Value {
+fn handle_line(
+  line: &str,
+  sys: &Path,
+  os: &Path,
+  store: &Arc<Mutex<SettingsStore>>,
+) -> serde_json::Value {
   let request: serde_json::Value = match serde_json::from_str(line) {
     Ok(value) => value,
     Err(e) => return error_frame(0, format!("invalid request: {}", e)),
@@ -111,7 +129,7 @@ fn handle_line(line: &str, sys: &Path, os: &Path) -> serde_json::Value {
   let id = request.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
   let op = request.get("op").and_then(|v| v.as_str()).unwrap_or("");
   let params = request.get("params").cloned().unwrap_or(serde_json::Value::Null);
-  dispatch(id, op, &params, sys, os)
+  dispatch(id, op, &params, sys, os, store)
 }
 
 fn dispatch(
@@ -120,6 +138,7 @@ fn dispatch(
   params: &serde_json::Value,
   sys: &Path,
   os: &Path,
+  store: &Arc<Mutex<SettingsStore>>,
 ) -> serde_json::Value {
   match op {
     OP_PING => success_frame(id, serde_json::json!({"pong": true})),
@@ -170,6 +189,26 @@ fn dispatch(
         Err(e) => error_frame(id, format!("wifi forget failed: {}", e)),
       }
     }
+    crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
+      Ok(guard) => success_frame(
+        id,
+        serde_json::to_value(crate::customize::get(&guard))
+          .unwrap_or(serde_json::Value::Null),
+      ),
+      Err(_) => error_frame(id, "customize get failed: store is locked".to_string()),
+    },
+    crate::customize::OP_CUSTOMIZE_SET => {
+      let wallpaper = params.get("wallpaper").and_then(|v| v.as_str());
+      let accent = params.get("accent").and_then(|v| v.as_str());
+      let theme = params.get("theme").and_then(|v| v.as_str());
+      match crate::customize::set(store, wallpaper, accent, theme) {
+        Ok(settings) => success_frame(
+          id,
+          serde_json::to_value(settings).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
     _ => error_frame(id, format!("unknown op: {:?}", op)),
   }
 }
@@ -195,14 +234,22 @@ fn error_frame(id: u64, error: String) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::path::PathBuf;
 
   fn no_params() -> serde_json::Value {
     serde_json::Value::Null
   }
 
+  fn memory_store() -> Arc<Mutex<SettingsStore>> {
+    Arc::new(Mutex::new(SettingsStore::new(PathBuf::from(
+      "/tmp/tontoo-settings-socket-test.json",
+    ))))
+  }
+
   #[test]
   fn ping_frame() {
-    let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"));
+    let store = memory_store();
+    let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
     assert_eq!(frame["id"], 7);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["result"]["pong"], true);
@@ -210,33 +257,38 @@ mod tests {
 
   #[test]
   fn unknown_op_frame() {
-    let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"));
+    let store = memory_store();
+    let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("unknown op"));
   }
 
   #[test]
   fn invalid_line_frame() {
-    let frame = handle_line("not json\n", Path::new("/nonexistent"), Path::new("/nonexistent"));
+    let store = memory_store();
+    let frame = handle_line("not json\n", Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
     assert_eq!(frame["id"], 0);
     assert_eq!(frame["ok"], false);
   }
 
   #[test]
   fn missing_file_frame() {
-    let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"));
+    let store = memory_store();
+    let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"), &store);
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("os.fico unavailable"));
   }
 
   #[test]
   fn wifi_connect_rejects_missing_ssid() {
+    let store = memory_store();
     let frame = dispatch(
       4,
       crate::wifi::OP_WIFI_CONNECT,
       &serde_json::json!({}),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
+      &store,
     );
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("wifi connect failed"));
@@ -244,15 +296,71 @@ mod tests {
 
   #[test]
   fn wifi_forget_rejects_missing_ssid() {
+    let store = memory_store();
     let frame = dispatch(
       5,
       crate::wifi::OP_WIFI_FORGET,
       &serde_json::json!({}),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
+      &store,
     );
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("wifi forget failed"));
+  }
+
+  #[test]
+  fn customize_get_returns_defaults() {
+    let store = memory_store();
+    let frame = dispatch(
+      6,
+      crate::customize::OP_CUSTOMIZE_GET,
+      &no_params(),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["result"]["wallpaper"], crate::customize::DEFAULT_WALLPAPER);
+    assert_eq!(frame["result"]["accent"], crate::customize::DEFAULT_ACCENT);
+    assert_eq!(frame["result"]["theme"], crate::customize::DEFAULT_THEME);
+  }
+
+  #[test]
+  fn customize_set_roundtrip_and_rejects_invalid() {
+    let store = memory_store();
+    let frame = dispatch(
+      7,
+      crate::customize::OP_CUSTOMIZE_SET,
+      &serde_json::json!({"wallpaper": "SONOMA", "accent": "blue", "theme": "light"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["result"]["wallpaper"], "SONOMA");
+
+    let frame = dispatch(
+      8,
+      crate::customize::OP_CUSTOMIZE_GET,
+      &no_params(),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["result"]["accent"], "blue");
+
+    let frame = dispatch(
+      9,
+      crate::customize::OP_CUSTOMIZE_SET,
+      &serde_json::json!({"theme": "sepia"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("unknown theme"));
+    let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
   }
 
   #[cfg(target_os = "linux")]
@@ -271,7 +379,10 @@ mod tests {
     let (client, server) = UnixStream::pair().unwrap();
     let sys_clone = sys_path.clone();
     let os_clone = os_path.clone();
-    std::thread::spawn(move || serve_connection(server, sys_clone, os_clone));
+    let store = Arc::new(Mutex::new(SettingsStore::new(
+      dir.join("socket-test-settings.json"),
+    )));
+    std::thread::spawn(move || serve_connection(server, sys_clone, os_clone, store));
 
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);

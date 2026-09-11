@@ -26,6 +26,7 @@ known networks in CoreData and the socket server.
 | Os | [Os.md](Os.md) | OS identity backend, `os.fico` with name, version and beta flag |
 | Socket | [Socket.md](Socket.md) | Unix socket server basis and protocol roadmap |
 | WiFi | [Wifi.md](Wifi.md) | WiFi backend, known networks in CoreData, public/private socket ops |
+| Customize | [Customize.md](Customize.md) | Customize backend, `customize` store domain, public/private socket ops |
 
 ## Quick Start
 
@@ -65,6 +66,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Customize backend. `customize` module (`customize` store
+  domain with `wallpaper`/`accent`/`theme`, validated read overlay and
+  partial-write `set` with persistence), socket ops `customize_get`
+  (public) plus `customize_set` (private, Settings app only); the store
+  is now shared across connection threads. See [Customize.md](Customize.md).
 - 2026-09-09: WiFi backend. `wifi` module (scan with known flag, status,
   connect, disconnect, enable, disable, forget), known networks in
   CoreData (`KnownWifi` under `com.tontoo.settingsdaemon`), socket ops

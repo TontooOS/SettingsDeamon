@@ -675,10 +675,27 @@ pub fn set_current(
   Ok(Some(entry))
 }
 
-/// Persist the fill mode (desktop untouched).
+/// Persist the fill mode and apply it live: forwards the current
+/// wallpaper file with the new mode to the compositor first, then
+/// persists. Nothing is persisted when the compositor is unreachable
+/// (same strictness as `apply`). With no wallpaper configured the mode
+/// only persists.
 pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String, String> {
   if !FILL_MODES.contains(&fill) {
     return Err(format!("wallpaper set failed: unknown fill mode {:?}", fill));
+  }
+  let current_file: Option<PathBuf> = {
+    let guard = store
+      .lock()
+      .map_err(|_| "wallpaper set failed: store is locked".to_string())?;
+    current_in(&guard, &scan_premade(), &scan_custom())
+      .map(|entry| PathBuf::from(entry.path))
+  };
+  if let Some(file) = current_file {
+    if !file.is_file() {
+      return Err(format!("wallpaper set failed: file not found {:?}", file));
+    }
+    send_to_compositor(&file, fill)?;
   }
   let mut guard = store
     .lock()
@@ -713,9 +730,10 @@ fn active_theme(store: &SettingsStore) -> String {
   }
 }
 
-/// Forward a resolved image file to the compositor for the desktop
-/// crossfade. The compositor validates and loads the file itself.
-pub(crate) fn send_to_compositor(file: &Path) -> Result<(), String> {
+/// Forward a resolved image file plus fill mode to the compositor for
+/// the desktop crossfade. The compositor validates and loads the file
+/// itself.
+pub(crate) fn send_to_compositor(file: &Path, fill: &str) -> Result<(), String> {
   use std::io::{BufRead, BufReader, Write};
   use std::time::Duration;
 
@@ -729,7 +747,7 @@ pub(crate) fn send_to_compositor(file: &Path) -> Result<(), String> {
   })?;
   let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
   let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-  let mut line = serde_json::json!({"op": "set_wallpaper", "path": file.to_string_lossy()}).to_string();
+  let mut line = serde_json::json!({"op": "set_wallpaper", "path": file.to_string_lossy(), "fill": fill}).to_string();
   line.push('\n');
   stream
     .write_all(line.as_bytes())
@@ -756,9 +774,10 @@ pub(crate) fn send_to_compositor(file: &Path) -> Result<(), String> {
 
 /// Push the configured current wallpaper to the compositor (startup
 /// sync, best effort). Resolves like `current_in`, honoring the
-/// `DEFAULT_PACK` fallback, and forwards the entry file. Returns the
-/// pushed entry, or `None` when nothing is configured. Errors when the
-/// compositor is unreachable or the file is missing.
+/// `DEFAULT_PACK` fallback, and forwards the entry file with the
+/// configured fill mode. Returns the pushed entry, or `None` when
+/// nothing is configured. Errors when the compositor is unreachable or
+/// the file is missing.
 pub fn push_current_to_compositor(store: &SettingsStore) -> Result<Option<WallpaperEntry>, String> {
   let premade = scan_premade();
   let customs = scan_custom();
@@ -772,7 +791,7 @@ pub fn push_current_to_compositor(store: &SettingsStore) -> Result<Option<Wallpa
       file
     ));
   }
-  send_to_compositor(&file)?;
+  send_to_compositor(&file, &fill_in(store))?;
   Ok(Some(entry))
 }
 
@@ -828,7 +847,13 @@ pub fn apply(
       file
     ));
   }
-  send_to_compositor(&file)?;
+  let fill = {
+    let guard = store
+      .lock()
+      .map_err(|_| "wallpaper apply failed: store is locked".to_string())?;
+    fill_in(&guard)
+  };
+  send_to_compositor(&file, &fill)?;
   set_current(store, kind, id)?;
   let mut applied = entry;
   applied.path = file.to_str().unwrap_or_default().to_string();
@@ -980,6 +1005,13 @@ mod tests {
 
   #[test]
   fn set_fill_validates_and_persists() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    // No THAOELAKE pack here: nothing configured, persist-only path.
+    let premade = temp_case("fill-premade");
+    write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("fill-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
     let dir = temp_case("fill");
     let store = memory_store(&dir.join("settings.json"));
     assert_eq!(fill_in(&store.lock().unwrap()), DEFAULT_FILL);
@@ -987,6 +1019,100 @@ mod tests {
     assert_eq!(fill_in(&store.lock().unwrap()), "tile");
     assert!(set_fill(&store, "melt").is_err());
     assert_eq!(fill_in(&store.lock().unwrap()), "tile");
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn set_fill_forwards_live_and_fails_cleanly() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("fill-live-premade");
+    write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("fill-live-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let dir = temp_case("fill-live-store");
+    let store = memory_store(&dir.join("settings.json"));
+    set_current(&store, "premade", "FLOW").unwrap();
+
+    // Compositor down: error, fill not persisted.
+    std::env::set_var(
+      "COMPOSITOR_SOCKET",
+      "/nonexistent-wallpaper-test/compositor.sock",
+    );
+    assert!(set_fill(&store, "tile").is_err());
+    assert_eq!(fill_in(&store.lock().unwrap()), DEFAULT_FILL);
+
+    // Compositor up: applied live and persisted.
+    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    std::env::set_var("COMPOSITOR_SOCKET", &sock);
+    assert_eq!(set_fill(&store, "tile").unwrap(), "tile");
+    assert_eq!(fill_in(&store.lock().unwrap()), "tile");
+
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn apply_frame_carries_fill_mode() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    let premade = temp_case("frame-premade");
+    write_pack(&premade, "FLOW", Some("name: \"Flow\"\n"), &["a.png"]);
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("frame-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
+    let dir = temp_case("frame-store");
+    let store = memory_store(&dir.join("settings.json"));
+    {
+      let mut guard = store.lock().unwrap();
+      guard.set(DOMAIN, KEY_FILL, serde_json::json!("center"));
+      guard.save().unwrap();
+    }
+
+    // Capture listener: records the request line, replies ok.
+    let path = std::env::temp_dir().join(format!(
+      "tontoo-compositor-capture-{}.sock",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+    let captured: Arc<StdMutex<String>> = Arc::new(StdMutex::new(String::new()));
+    let captured_thread = captured.clone();
+    std::thread::spawn(move || {
+      if let Ok((mut stream, _)) = listener.accept() {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        *captured_thread.lock().unwrap() = line;
+        let _ = stream.write_all(b"{\"ok\": true, \"result\": {}}\n");
+      }
+    });
+    std::env::set_var("COMPOSITOR_SOCKET", &path);
+    apply(&store, "premade", "FLOW", "light").unwrap();
+    let line = captured.lock().unwrap().clone();
+    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(frame["op"], "set_wallpaper");
+    assert_eq!(frame["fill"], "center");
+    assert!(frame["path"].as_str().unwrap().ends_with("a.png"));
+
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    std::env::remove_var("COMPOSITOR_SOCKET");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
     let _ = std::fs::remove_dir_all(&dir);
   }
 

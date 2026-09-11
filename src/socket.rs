@@ -304,8 +304,17 @@ mod tests {
   use super::*;
   use std::path::PathBuf;
 
+  static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
   fn no_params() -> serde_json::Value {
     serde_json::Value::Null
+  }
+
+  fn temp_case(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("tontoo-socket-{}", name));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
   }
 
   fn memory_store() -> Arc<Mutex<SettingsStore>> {
@@ -450,6 +459,14 @@ mod tests {
 
   #[test]
   fn wallpaper_set_fill_roundtrip_and_rejects_unknown() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    // No THAOELAKE pack here: nothing configured, persist-only path.
+    let premade = temp_case("fill-premade");
+    std::fs::create_dir_all(premade.join("FLOW")).unwrap();
+    std::fs::write(premade.join("FLOW").join("a.png"), b"x").unwrap();
+    std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
+    let customs = temp_case("fill-custom");
+    std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
     let store = memory_store();
     let frame = dispatch(
       11,
@@ -472,6 +489,10 @@ mod tests {
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("unknown fill mode"));
     let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
+    std::env::remove_var("TONTOO_WALLPAPERS_DIR");
+    std::env::remove_var("SETTINGS_WALLPAPER_DIR");
+    let _ = std::fs::remove_dir_all(&premade);
+    let _ = std::fs::remove_dir_all(&customs);
   }
 
   #[test]

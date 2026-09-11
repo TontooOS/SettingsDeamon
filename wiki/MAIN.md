@@ -67,6 +67,10 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-11: Fill mode goes live. `apply`, boot push and `set_fill`
+  forward the fill mode to the compositor (`set_wallpaper` frame);
+  `set_fill` persists only after a successful forward (persist-only
+  with no wallpaper configured). See [Wallpaper.md](Wallpaper.md).
 - 2026-09-11: Wallpaper delete. `wallpaper_delete` op (customs only,
   never premade): pre-switches to Tahoe Lake (auto) when the deleted
   wallpaper is current, then removes the file, the CoreData entry and

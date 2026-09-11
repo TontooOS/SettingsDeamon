@@ -85,12 +85,16 @@ pub fn delete(store: &Arc<Mutex<SettingsStore>>, id: &str) -> Result<bool, Strin
   Aborts with an error (nothing removed) when the compositor is
   unreachable while a switch is required.
 - `set_current` resolves the kind/id against fresh scans and returns
-  `Err` for unknown kinds or ids. `set_fill` rejects unknown modes.
+  `Err` for unknown kinds or ids. `set_fill` validates, forwards the
+  current file with the new mode to the compositor, then persists
+  (nothing is persisted when the compositor is unreachable; with no
+  wallpaper configured the mode only persists).
 - `apply` takes `light`, `dark` or `auto` (`auto` follows the
-  `customize` theme), resolves the variant file, forwards it to the
-  compositor socket (`COMPOSITOR_SOCKET` or
-  `/run/tontoo-compositor.sock`, `set_wallpaper` op), then persists the
-  selection. Nothing is persisted when the compositor is unreachable.
+  `customize` theme), resolves the variant file, forwards it with the
+  configured fill mode to the compositor socket
+  (`COMPOSITOR_SOCKET` or `/run/tontoo-compositor.sock`,
+  `set_wallpaper` op), then persists the selection. Nothing is persisted
+  when the compositor is unreachable.
 - Op names live with the backend
   (`settings_daemon::wallpaper::OP_WALLPAPER_*`).
 

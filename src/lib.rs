@@ -1,5 +1,6 @@
 pub mod config;
 pub mod customize;
+pub mod datetime;
 pub mod display;
 pub mod dns;
 pub mod hardware;

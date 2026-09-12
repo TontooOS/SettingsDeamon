@@ -16,6 +16,8 @@ use crate::store::SettingsStore;
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
 //                 | "dns_get" | "dns_set"
 //                 | "wired_list"
+//                 | "datetime_get" | "datetime_set_timezone"
+//                 | "datetime_set_24h"
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
@@ -34,7 +36,10 @@ use crate::store::SettingsStore;
 // `dns_get` is a public read op for the effective DNS state; `dns_set`
 // is a private write op with the same visibility rule as the `wifi_*`
 // write ops below. `wired_list` is a public read op for connected
-// Ethernet interfaces with details.
+// Ethernet interfaces with details. `datetime_get` is a public read op
+// for NTP/timezone/24h state; `datetime_set_timezone` and
+// `datetime_set_24h` are private write ops with the same visibility rule
+// as the `wifi_*` write ops.
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
@@ -233,6 +238,34 @@ fn dispatch(
     crate::wired::OP_WIRED_LIST => match crate::wired::list() {
       Ok(interfaces) => success_frame(id, serde_json::json!({"interfaces": interfaces})),
       Err(e) => error_frame(id, format!("wired list failed: {}", e)),
+    }
+    crate::datetime::OP_DATETIME_GET => match store.lock() {
+      Ok(guard) => success_frame(
+        id,
+        serde_json::to_value(crate::datetime::get(&guard))
+          .unwrap_or(serde_json::Value::Null),
+      ),
+      Err(_) => error_frame(id, "datetime get failed: store is locked".to_string()),
+    },
+    crate::datetime::OP_DATETIME_SET_TIMEZONE => {
+      let timezone = params.get("timezone").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::datetime::set_timezone(store, timezone) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::datetime::OP_DATETIME_SET_24H => {
+      let use_24h = params.get("use_24h").and_then(|v| v.as_bool()).unwrap_or(false);
+      match crate::datetime::set_24h(store, use_24h) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
     }
     crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
       Ok(guard) => success_frame(

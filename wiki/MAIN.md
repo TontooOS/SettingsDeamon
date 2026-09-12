@@ -31,6 +31,7 @@ known networks in CoreData and the socket server.
 | Display | [Display.md](Display.md) | Display backend, `display` store domain, public/private socket ops |
 | Dns | [Dns.md](Dns.md) | DNS backend, active-connection IPv4 servers, public/private socket ops |
 | Wired | [Wired.md](Wired.md) | Wired backend, connected Ethernet interfaces with details, public socket op |
+| Datetime | [Datetime.md](Datetime.md) | Date & time backend, NTP/timezone via timedatectl, 24h preference, public/private socket ops |
 
 ## Quick Start
 
@@ -70,6 +71,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: Date & time backend. `datetime` module (NTP/timezone via
+  `timedatectl`, real zone list with zoneinfo fallback, 24h preference
+  in the `datetime` store domain), socket ops `datetime_get` (public)
+  plus `datetime_set_timezone`/`datetime_set_24h` (private, Settings app
+  only). See [Datetime.md](Datetime.md).
 - 2026-09-12: Wired backend. `wired` module (connected Ethernet
   interfaces with addresses from NetworkManager plus MAC/MTU/speed/
   driver from sysfs), socket op `wired_list` (public). See

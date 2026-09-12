@@ -9,6 +9,7 @@ pub mod socket;
 pub mod store;
 pub mod wallpaper;
 pub mod wifi;
+pub mod wired;
 
 pub use config::{
   DaemonConfig, DEFAULT_OS_FICO_PATH, DEFAULT_SOCKET_PATH, DEFAULT_STORE_PATH, DEFAULT_SYS_FICO_PATH,

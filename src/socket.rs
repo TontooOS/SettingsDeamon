@@ -15,6 +15,7 @@ use crate::store::SettingsStore;
 //                 | "wifi_connect" | "wifi_disconnect"
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
 //                 | "dns_get" | "dns_set"
+//                 | "wired_list"
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
@@ -32,7 +33,8 @@ use crate::store::SettingsStore;
 // served to every client (`wifi_known_list` never exposes passwords).
 // `dns_get` is a public read op for the effective DNS state; `dns_set`
 // is a private write op with the same visibility rule as the `wifi_*`
-// write ops below.
+// write ops below. `wired_list` is a public read op for connected
+// Ethernet interfaces with details.
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
@@ -227,6 +229,10 @@ fn dispatch(
         ),
         Err(e) => error_frame(id, format!("dns set failed: {}", e)),
       }
+    }
+    crate::wired::OP_WIRED_LIST => match crate::wired::list() {
+      Ok(interfaces) => success_frame(id, serde_json::json!({"interfaces": interfaces})),
+      Err(e) => error_frame(id, format!("wired list failed: {}", e)),
     }
     crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
       Ok(guard) => success_frame(

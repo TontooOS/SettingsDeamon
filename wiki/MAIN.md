@@ -30,6 +30,7 @@ known networks in CoreData and the socket server.
 | Wallpaper | [Wallpaper.md](Wallpaper.md) | Wallpaper backend, premade packs, customs registry, public/private socket ops |
 | Display | [Display.md](Display.md) | Display backend, `display` store domain, public/private socket ops |
 | Dns | [Dns.md](Dns.md) | DNS backend, active-connection IPv4 servers, public/private socket ops |
+| Wired | [Wired.md](Wired.md) | Wired backend, connected Ethernet interfaces with details, public socket op |
 
 ## Quick Start
 
@@ -69,6 +70,10 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: Wired backend. `wired` module (connected Ethernet
+  interfaces with addresses from NetworkManager plus MAC/MTU/speed/
+  driver from sysfs), socket op `wired_list` (public). See
+  [Wired.md](Wired.md).
 - 2026-09-12: DNS backend. `dns` module (IPv4 servers of the active
   NetworkManager connection, strict validation, empty means DHCP),
   socket ops `dns_get` (public) plus `dns_set` (private, Settings app

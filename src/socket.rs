@@ -14,6 +14,7 @@ use crate::store::SettingsStore;
 //                 | "wifi_list" | "wifi_status" | "wifi_known_list"
 //                 | "wifi_connect" | "wifi_disconnect"
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
+//                 | "dns_get" | "dns_set"
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
@@ -29,6 +30,9 @@ use crate::store::SettingsStore;
 //
 // `wifi_list`, `wifi_status` and `wifi_known_list` are public read ops
 // served to every client (`wifi_known_list` never exposes passwords).
+// `dns_get` is a public read op for the effective DNS state; `dns_set`
+// is a private write op with the same visibility rule as the `wifi_*`
+// write ops below.
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
@@ -205,6 +209,23 @@ fn dispatch(
       match crate::wifi::forget(ssid) {
         Ok(removed) => success_frame(id, serde_json::json!({"forgotten": removed})),
         Err(e) => error_frame(id, format!("wifi forget failed: {}", e)),
+      }
+    }
+    crate::dns::OP_DNS_GET => match crate::dns::get() {
+      Ok(state) => success_frame(
+        id,
+        serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+      ),
+      Err(e) => error_frame(id, format!("dns get failed: {}", e)),
+    },
+    crate::dns::OP_DNS_SET => {
+      let servers = params.get("servers").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::dns::set_from_str(servers) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, format!("dns set failed: {}", e)),
       }
     }
     crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
@@ -414,6 +435,21 @@ mod tests {
     );
     assert_eq!(frame["ok"], false);
     assert!(frame["error"].as_str().unwrap().contains("wifi forget failed"));
+  }
+
+  #[test]
+  fn dns_set_rejects_invalid_servers() {
+    let store = memory_store();
+    let frame = dispatch(
+      7,
+      crate::dns::OP_DNS_SET,
+      &serde_json::json!({"servers": "not-an-ip"}),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+    );
+    assert_eq!(frame["ok"], false);
+    assert!(frame["error"].as_str().unwrap().contains("dns set failed"));
   }
 
   #[test]

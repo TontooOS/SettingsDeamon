@@ -1,6 +1,7 @@
 pub mod config;
 pub mod customize;
 pub mod display;
+pub mod dns;
 pub mod hardware;
 pub mod library;
 pub mod os;

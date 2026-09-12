@@ -29,6 +29,7 @@ known networks in CoreData and the socket server.
 | Customize | [Customize.md](Customize.md) | Customize backend, `customize` store domain, public/private socket ops |
 | Wallpaper | [Wallpaper.md](Wallpaper.md) | Wallpaper backend, premade packs, customs registry, public/private socket ops |
 | Display | [Display.md](Display.md) | Display backend, `display` store domain, public/private socket ops |
+| Dns | [Dns.md](Dns.md) | DNS backend, active-connection IPv4 servers, public/private socket ops |
 
 ## Quick Start
 
@@ -68,6 +69,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: DNS backend. `dns` module (IPv4 servers of the active
+  NetworkManager connection, strict validation, empty means DHCP),
+  socket ops `dns_get` (public) plus `dns_set` (private, Settings app
+  only; reactivates the connection so the change applies live). See
+  [Dns.md](Dns.md).
 - 2026-09-12: WiFi system store and auto-join. Known networks (with
   encrypted passwords) move to `/System/Preferences/com.tontoo.wifi/storage.fico`;
   new public op `wifi_known_list` (never exposes passwords); `wifi_status`

@@ -430,7 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_join_without_adapter_returns_none() {        let (_dir, _guard) = with_scratch_system_store("autojoin");
+    fn auto_join_without_adapter_returns_none() {
+        let (_dir, _guard) = with_scratch_system_store("autojoin");
         // The mandated test environment (WSL ArchLinux) has no wireless
         // adapter, so auto-join degrades to Ok(None) without touching nmcli.
         if !Wifi::new().is_available() {

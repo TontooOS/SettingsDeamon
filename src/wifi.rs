@@ -430,12 +430,23 @@ mod tests {
     }
 
     #[test]
-    fn auto_join_without_adapter_returns_none() {
-        let (_dir, _guard) = with_scratch_system_store("autojoin");
+    fn auto_join_without_adapter_returns_none() {        let (_dir, _guard) = with_scratch_system_store("autojoin");
         // The mandated test environment (WSL ArchLinux) has no wireless
         // adapter, so auto-join degrades to Ok(None) without touching nmcli.
         if !Wifi::new().is_available() {
             assert!(auto_join().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn status_without_adapter_reports_unavailable() {
+        // Same environment assumption as above: no adapter means
+        // available/enabled false and a null status instead of an error.
+        if !Wifi::new().is_available() {
+            let value = status().unwrap();
+            assert_eq!(value["available"], false);
+            assert_eq!(value["enabled"], false);
+            assert!(value["status"].is_null());
         }
     }
 }

@@ -71,6 +71,8 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: Automatic time sync enforced: `ensure_ntp` enables NTP
+  at daemon startup (best effort), the UI toggle is locked on.
 - 2026-09-12: Date & time backend. `datetime` module (NTP/timezone via
   `timedatectl`, real zone list with zoneinfo fallback, 24h preference
   in the `datetime` store domain), socket ops `datetime_get` (public)

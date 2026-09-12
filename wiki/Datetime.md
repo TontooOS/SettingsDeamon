@@ -33,6 +33,8 @@ Rules:
 - The 24-hour preference is validated storage only (boolean); corrupt
   values fall back to `false`.
 - Missing params return `ok: false`, never a partial result.
+- `ensure_ntp` runs at daemon startup (best effort): automatic time
+  sync stays on, the Settings app offers no way to turn it off.
 
 ## API
 
@@ -40,6 +42,7 @@ Rules:
 pub fn get(store: &SettingsStore) -> DateTimeState
 pub fn set_timezone(store: &Arc<Mutex<SettingsStore>>, timezone: &str) -> Result<DateTimeState, String>
 pub fn set_24h(store: &Arc<Mutex<SettingsStore>>, use_24h: bool) -> Result<DateTimeState, String>
+pub fn ensure_ntp() -> Result<bool, String>
 pub fn timezone_list() -> Vec<String>
 pub const OP_DATETIME_GET: &str = "datetime_get";
 pub const OP_DATETIME_SET_TIMEZONE: &str = "datetime_set_timezone";

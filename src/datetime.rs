@@ -64,6 +64,15 @@ fn ntp_active() -> bool {
     timedatectl_prop("NTP").eq_ignore_ascii_case("yes")
 }
 
+/// Ensure automatic time sync stays on: enables NTP and returns the
+/// active state afterwards. Best effort for daemon startup; callers log
+/// the error instead of failing.
+pub fn ensure_ntp() -> Result<bool, String> {
+    networkkit::util::run("timedatectl", &["set-ntp", "true"])
+        .map_err(|e| format!("datetime ntp failed: {}", e))?;
+    Ok(ntp_active())
+}
+
 /// Non-zone files below `/usr/share/zoneinfo` (tables, POSIX variants).
 fn is_zone_file(relative: &str) -> bool {
     if relative.is_empty()
@@ -229,7 +238,6 @@ mod tests {
         assert!(set_timezone(&store, "../etc/passwd").is_err());
         assert!(set_timezone(&store, "Mars/Olympus_Mons").is_err());
     }
-
     #[test]
     fn zone_file_filter() {
         assert!(is_zone_file("Europe/Berlin"));
@@ -238,5 +246,12 @@ mod tests {
         assert!(!is_zone_file("posix/Europe/Berlin"));
         assert!(!is_zone_file("right/UTC"));
         assert!(!is_zone_file(""));
+    }
+
+    #[test]
+    fn ensure_ntp_without_timedatectl_errors() {
+        if !networkkit::util::tool_available("timedatectl") {
+            assert!(ensure_ntp().is_err());
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use settings_daemon::{display, hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper, wifi};
+use settings_daemon::{datetime, display, hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper, wifi};
 
 fn main() {
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -43,6 +43,12 @@ fn main() {
     ),
     Ok(None) => log::info!("wifi auto-join: nothing to join"),
     Err(e) => log::warn!("wifi auto-join skipped ({})", e),
+  }
+
+  // Automatic time sync stays on (best effort, same ordering logic).
+  match datetime::ensure_ntp() {
+    Ok(active) => log::info!("datetime ntp ensured (active: {})", active),
+    Err(e) => log::warn!("datetime ntp skipped ({})", e),
   }
 
   // Refresh the hardware snapshot on every start. Missing sources degrade

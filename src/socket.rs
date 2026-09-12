@@ -11,7 +11,7 @@ use crate::store::SettingsStore;
 // ---------------------------------------------------------------------------
 //
 // Request:  {"id": 1, "op": "ping" | "get_hardware" | "get_os"
-//                 | "wifi_list" | "wifi_status"
+//                 | "wifi_list" | "wifi_status" | "wifi_known_list"
 //                 | "wifi_connect" | "wifi_disconnect"
 //                 | "wifi_enable" | "wifi_disable" | "wifi_forget"
 //                 | "customize_get" | "customize_set"
@@ -27,7 +27,8 @@ use crate::store::SettingsStore;
 // `os.fico` content. Missing or corrupt files return `ok: false`, never a
 // partial document.
 //
-// `wifi_list` and `wifi_status` are public read ops served to every client.
+// `wifi_list`, `wifi_status` and `wifi_known_list` are public read ops
+// served to every client (`wifi_known_list` never exposes passwords).
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
@@ -170,6 +171,10 @@ fn dispatch(
     crate::wifi::OP_WIFI_STATUS => match crate::wifi::status() {
       Ok(value) => success_frame(id, value),
       Err(e) => error_frame(id, format!("wifi status failed: {}", e)),
+    },
+    crate::wifi::OP_WIFI_KNOWN_LIST => match crate::wifi::known_list() {
+      Ok(known) => success_frame(id, serde_json::json!({"networks": known})),
+      Err(e) => error_frame(id, format!("wifi known list failed: {}", e)),
     },
     crate::wifi::OP_WIFI_CONNECT => {
       let ssid = params.get("ssid").and_then(|v| v.as_str()).unwrap_or("");

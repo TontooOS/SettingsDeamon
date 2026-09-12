@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use settings_daemon::{display, hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper};
+use settings_daemon::{display, hardware, os, DaemonConfig, LibraryManager, SettingsStore, socket, wallpaper, wifi};
 
 fn main() {
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -32,6 +32,17 @@ fn main() {
   match display::push_to_compositor(&store) {
     Ok(()) => log::info!("display settings pushed to compositor"),
     Err(e) => log::warn!("display push skipped ({})", e),
+  }
+
+  // Auto-join the most recently used visible known network (best effort:
+  // no adapter, radio off or nothing known all degrade to no-op).
+  match wifi::auto_join() {
+    Ok(Some(status)) => log::info!(
+      "wifi auto-joined {}",
+      status.ssid.as_deref().unwrap_or("<unknown>")
+    ),
+    Ok(None) => log::info!("wifi auto-join: nothing to join"),
+    Err(e) => log::warn!("wifi auto-join skipped ({})", e),
   }
 
   // Refresh the hardware snapshot on every start. Missing sources degrade

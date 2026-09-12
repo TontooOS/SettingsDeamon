@@ -68,6 +68,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: WiFi system store and auto-join. Known networks (with
+  encrypted passwords) move to `/System/Preferences/com.tontoo.wifi/storage.fico`;
+  new public op `wifi_known_list` (never exposes passwords); `wifi_status`
+  gains `available`; daemon auto-joins the most recently used visible
+  known network at startup. See [Wifi.md](Wifi.md).
 - 2026-09-11: Display backend. `display` module (`display` store
   domain: brightness, night light, per-output modes), socket ops
   `display_get` (public) plus `display_set` (private, Settings app

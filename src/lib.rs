@@ -5,6 +5,7 @@ pub mod display;
 pub mod dns;
 pub mod hardware;
 pub mod library;
+pub mod locale;
 pub mod os;
 pub mod socket;
 pub mod store;

@@ -32,6 +32,7 @@ known networks in CoreData and the socket server.
 | Dns | [Dns.md](Dns.md) | DNS backend, active-connection IPv4 servers, public/private socket ops |
 | Wired | [Wired.md](Wired.md) | Wired backend, connected Ethernet interfaces with details, public socket op |
 | Datetime | [Datetime.md](Datetime.md) | Date & time backend, NTP/timezone via timedatectl, 24h preference, public/private socket ops |
+| Locale | [Locale.md](Locale.md) | Language & region backend, system locale via localectl, keyboard auto-detect, public/private socket ops |
 
 ## Quick Start
 
@@ -71,6 +72,12 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-12: Language & region backend. `locale` module (system
+  language EN/DE, region formats, keyboard layouts with variants and
+  region-based auto-detect via `localectl`), socket ops `locale_get`
+  and `locale_keymap_variants` (public) plus `locale_set_language`/
+  `locale_set_region`/`locale_set_keymap`/`locale_set_auto_keymap`
+  (private, Settings app only). See [Locale.md](Locale.md).
 - 2026-09-12: Automatic time sync enforced: `ensure_ntp` enables NTP
   at daemon startup (best effort), the UI toggle is locked on.
 - 2026-09-12: Date & time backend. `datetime` module (NTP/timezone via

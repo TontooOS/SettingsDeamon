@@ -18,6 +18,9 @@ use crate::store::SettingsStore;
 //                 | "wired_list"
 //                 | "datetime_get" | "datetime_set_timezone"
 //                 | "datetime_set_24h"
+//                 | "locale_get" | "locale_set_language" | "locale_set_region"
+//                 | "locale_set_keymap" | "locale_set_auto_keymap"
+//                 | "locale_keymap_variants"
 //                 | "customize_get" | "customize_set"
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
@@ -39,7 +42,9 @@ use crate::store::SettingsStore;
 // Ethernet interfaces with details. `datetime_get` is a public read op
 // for NTP/timezone/24h state; `datetime_set_timezone` and
 // `datetime_set_24h` are private write ops with the same visibility rule
-// as the `wifi_*` write ops.
+// as the `wifi_*` write ops. `locale_get` and `locale_keymap_variants`
+// are public read ops; the `locale_set_*` ops are private write ops with
+// the same visibility rule.
 // `wifi_connect`, `wifi_disconnect`, `wifi_enable`, `wifi_disable` and
 // `wifi_forget` are private write ops: no public client library exposes
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
@@ -266,6 +271,62 @@ fn dispatch(
         ),
         Err(e) => error_frame(id, e),
       }
+    }
+    crate::locale::OP_LOCALE_GET => match store.lock() {
+      Ok(guard) => success_frame(
+        id,
+        serde_json::to_value(crate::locale::get(&guard))
+          .unwrap_or(serde_json::Value::Null),
+      ),
+      Err(_) => error_frame(id, "locale get failed: store is locked".to_string()),
+    },
+    crate::locale::OP_LOCALE_SET_LANGUAGE => {
+      let language = params.get("language").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::locale::set_language(store, language) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::locale::OP_LOCALE_SET_REGION => {
+      let region = params.get("region").and_then(|v| v.as_str()).unwrap_or("");
+      match crate::locale::set_region(store, region) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::locale::OP_LOCALE_SET_KEYMAP => {
+      let layout = params.get("layout").and_then(|v| v.as_str()).unwrap_or("");
+      let variant = params.get("variant").and_then(|v| v.as_str());
+      match crate::locale::set_keymap(store, layout, variant) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::locale::OP_LOCALE_SET_AUTO_KEYMAP => {
+      let auto = params.get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
+      match crate::locale::set_auto_keymap(store, auto) {
+        Ok(state) => success_frame(
+          id,
+          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+        ),
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::locale::OP_LOCALE_KEYMAP_VARIANTS => {
+      let layout = params.get("layout").and_then(|v| v.as_str()).unwrap_or("");
+      success_frame(
+        id,
+        serde_json::json!({"variants": crate::locale::keymap_variants(layout)}),
+      )
     }
     crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
       Ok(guard) => success_frame(

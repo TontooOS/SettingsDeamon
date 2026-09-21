@@ -24,6 +24,8 @@ pub const KEY_WALLPAPER: &str = "wallpaper";
 pub const KEY_ACCENT: &str = "accent";
 /// Color theme (one of `THEMES`).
 pub const KEY_THEME: &str = "theme";
+/// Liquid glass amount (one of `GLASS_AMOUNTS`).
+pub const KEY_GLASS: &str = "glass";
 /// Revision counter, bumped on every successful `customize_set` so clients
 /// can poll cheaply for changes.
 pub const KEY_REVISION: &str = "revision";
@@ -34,6 +36,7 @@ pub const OP_CUSTOMIZE_SET: &str = "customize_set";
 pub const DEFAULT_WALLPAPER: &str = "THAOELAKE";
 pub const DEFAULT_ACCENT: &str = "multicolor";
 pub const DEFAULT_THEME: &str = "dark";
+pub const DEFAULT_GLASS: &str = "glass";
 
 /// Accent colors accepted by `customize_set`. Mirrors the Settings app
 /// palette plus the `multicolor` default element (renders as blue).
@@ -54,6 +57,9 @@ pub const ACCENTS: &[&str] = &[
 ];
 /// Themes accepted by `customize_set`.
 pub const THEMES: &[&str] = &["dark", "light"];
+/// Liquid glass amounts accepted by `customize_set`: the "LiquidGlass
+/// Slider" with much glass, balanced glass and less glass.
+pub const GLASS_AMOUNTS: &[&str] = &["much", "glass", "less"];
 
 /// Color theme with typed dark/light handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,12 +145,41 @@ impl AccentColor {
   }
 }
 
+/// Liquid glass amount with typed handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GlassAmount {
+  Much,
+  Glass,
+  Less,
+}
+
+impl GlassAmount {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Much => "much",
+      Self::Glass => "glass",
+      Self::Less => "less",
+    }
+  }
+
+  pub fn from_str(raw: &str) -> Option<Self> {
+    match raw {
+      "much" => Some(Self::Much),
+      "glass" => Some(Self::Glass),
+      "less" => Some(Self::Less),
+      _ => None,
+    }
+  }
+}
+
 /// Effective customization: stored values overlaid on the defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomizeSettings {
   pub wallpaper: String,
   pub accent: String,
   pub theme: String,
+  pub glass: String,
   pub revision: u64,
 }
 
@@ -154,6 +189,7 @@ impl Default for CustomizeSettings {
       wallpaper: DEFAULT_WALLPAPER.to_string(),
       accent: DEFAULT_ACCENT.to_string(),
       theme: DEFAULT_THEME.to_string(),
+      glass: DEFAULT_GLASS.to_string(),
       revision: 0,
     }
   }
@@ -167,6 +203,10 @@ impl CustomizeSettings {
   pub fn accent_color(&self) -> AccentColor {
     AccentColor::from_str(&self.accent).unwrap_or(AccentColor::Multicolor)
   }
+
+  pub fn glass_amount(&self) -> GlassAmount {
+    GlassAmount::from_str(&self.glass).unwrap_or(GlassAmount::Glass)
+  }
 }
 
 fn valid_accent(value: &str) -> bool {
@@ -175,6 +215,10 @@ fn valid_accent(value: &str) -> bool {
 
 fn valid_theme(value: &str) -> bool {
   THEMES.contains(&value)
+}
+
+fn valid_glass(value: &str) -> bool {
+  GLASS_AMOUNTS.contains(&value)
 }
 
 /// Read the effective settings: stored values win when present and valid,
@@ -196,6 +240,11 @@ pub fn get(store: &SettingsStore) -> CustomizeSettings {
       settings.theme = value.to_string();
     }
   }
+  if let Some(value) = store.get(DOMAIN, KEY_GLASS).and_then(|v| v.as_str()) {
+    if valid_glass(value) {
+      settings.glass = value.to_string();
+    }
+  }
   if let Some(value) = store.get(DOMAIN, KEY_REVISION).and_then(|v| v.as_u64()) {
     settings.revision = value;
   }
@@ -212,6 +261,7 @@ pub fn set(
   wallpaper: Option<&str>,
   accent: Option<&str>,
   theme: Option<&str>,
+  glass: Option<&str>,
 ) -> Result<CustomizeSettings, String> {
   if let Some(value) = wallpaper {
     if value.is_empty() {
@@ -228,6 +278,11 @@ pub fn set(
       return Err(format!("customize set failed: unknown theme {:?}", value));
     }
   }
+  if let Some(value) = glass {
+    if !valid_glass(value) {
+      return Err(format!("customize set failed: unknown glass {:?}", value));
+    }
+  }
   let mut guard = store
     .lock()
     .map_err(|_| "customize set failed: store is locked".to_string())?;
@@ -239,6 +294,9 @@ pub fn set(
   }
   if let Some(value) = theme {
     guard.set(DOMAIN, KEY_THEME, serde_json::json!(value));
+  }
+  if let Some(value) = glass {
+    guard.set(DOMAIN, KEY_GLASS, serde_json::json!(value));
   }
   let revision = get(&guard)
     .revision
@@ -299,6 +357,7 @@ mod tests {
         wallpaper: "SONOMA".to_string(),
         accent: "blue".to_string(),
         theme: "light".to_string(),
+        glass: DEFAULT_GLASS.to_string(),
         revision: 0,
       }
     );
@@ -307,9 +366,10 @@ mod tests {
   #[test]
   fn set_rejects_invalid_values_without_touching_store() {
     let store = memory_store();
-    assert!(set(&store, Some(""), None, None).is_err());
-    assert!(set(&store, None, Some("neon"), None).is_err());
-    assert!(set(&store, None, None, Some("sepia")).is_err());
+    assert!(set(&store, Some(""), None, None, None).is_err());
+    assert!(set(&store, None, Some("neon"), None, None).is_err());
+    assert!(set(&store, None, None, Some("sepia"), None).is_err());
+    assert!(set(&store, None, None, None, Some("fog")).is_err());
     let guard = store.lock().unwrap();
     assert_eq!(get(&guard), CustomizeSettings::default());
   }
@@ -318,16 +378,28 @@ mod tests {
   fn set_applies_partial_updates() {
     let _ = std::fs::remove_file("/tmp/tontoo-settings-customize-test.json");
     let store = memory_store();
-    let applied = set(&store, Some("VENTURA"), None, Some("light")).unwrap();
+    let applied = set(&store, Some("VENTURA"), None, Some("light"), None).unwrap();
     assert_eq!(applied.wallpaper, "VENTURA");
     assert_eq!(applied.accent, DEFAULT_ACCENT);
     assert_eq!(applied.theme, "light");
+    assert_eq!(applied.glass, DEFAULT_GLASS);
     assert_eq!(applied.revision, 1);
-    let applied = set(&store, None, Some("multicolor"), None).unwrap();
+    let applied = set(&store, None, Some("multicolor"), None, Some("less")).unwrap();
     assert_eq!(applied.revision, 2);
     assert_eq!(applied.accent_color(), AccentColor::Multicolor);
     assert_eq!(applied.theme_mode(), ThemeMode::Light);
+    assert_eq!(applied.glass_amount(), GlassAmount::Less);
     let _ = std::fs::remove_file("/tmp/tontoo-settings-customize-test.json");
+  }
+
+  #[test]
+  fn typed_glass_amounts() {
+    for name in GLASS_AMOUNTS {
+      assert!(GlassAmount::from_str(name).is_some(), "missing {name}");
+      assert_eq!(GlassAmount::from_str(name).unwrap().as_str(), *name);
+    }
+    assert_eq!(GlassAmount::from_str("fog"), None);
+    assert_eq!(CustomizeSettings::default().glass_amount(), GlassAmount::Glass);
   }
 
   #[test]

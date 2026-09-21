@@ -52,9 +52,10 @@ use crate::store::SettingsStore;
 // `customize_get` is a public read op returning the effective
 // customization (`{"wallpaper", "accent", "theme", "revision"}`).
 // `customize_set` is a private write op with the same visibility rule as
-// the `wifi_*` write ops: partial `{"wallpaper"?, "accent"?, "theme"?}`
-// params, validated before anything is persisted. Every successful set
-// bumps `revision` so clients can poll for changes.
+// the `wifi_*` write ops: partial
+// `{"wallpaper"?, "accent"?, "theme"?, "glass"?}` params, validated before
+// anything is persisted. Every successful set bumps `revision` so clients
+// can poll for changes.
 //
 // `wallpaper_get` is a public read op returning the full wallpaper state
 // (`current`, `fill`, `customs`, `premade`).
@@ -341,7 +342,8 @@ fn dispatch(
       let wallpaper = params.get("wallpaper").and_then(|v| v.as_str());
       let accent = params.get("accent").and_then(|v| v.as_str());
       let theme = params.get("theme").and_then(|v| v.as_str());
-      match crate::customize::set(store, wallpaper, accent, theme) {
+      let glass = params.get("glass").and_then(|v| v.as_str());
+      match crate::customize::set(store, wallpaper, accent, theme, glass) {
         Ok(settings) => success_frame(
           id,
           serde_json::to_value(settings).unwrap_or(serde_json::Value::Null),

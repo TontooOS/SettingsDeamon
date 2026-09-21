@@ -12,7 +12,7 @@ Stored keys under the `customize` domain:
 
 ```json
 {
-  "customize": { "wallpaper": "THAOELAKE", "accent": "multicolor", "theme": "dark", "revision": 3 }
+  "customize": { "wallpaper": "THAOELAKE", "accent": "multicolor", "theme": "dark", "glass": "glass", "revision": 3 }
 }
 ```
 
@@ -22,13 +22,14 @@ Stored keys under the `customize` domain:
   `red`, `orange`, `yellow`, `green`, `teal`, `cyan`, `indigo`, `purple`,
   `purple2`, `pink`, `gray` (Settings app palette).
 - `theme` is `dark` or `light`.
+- `glass` is the LiquidGlass slider: `much`, `glass` (default) or `less`.
 - `revision` bumps on every successful `customize_set` so clients can poll
   for changes.
 
-Missing keys fall back to `THAOELAKE` / `multicolor` / `dark` / `0`.
-Invalid stored values (unknown accent/theme, empty wallpaper) fall back to
-the defaults on read and are rejected with an error on write, so a corrupt
-store file can never produce an invalid reply.
+Missing keys fall back to `THAOELAKE` / `multicolor` / `dark` / `glass` /
+`0`. Invalid stored values (unknown accent/theme/glass, empty wallpaper)
+fall back to the defaults on read and are rejected with an error on write,
+so a corrupt store file can never produce an invalid reply.
 
 ## API
 
@@ -37,9 +38,22 @@ pub struct CustomizeSettings {
   pub wallpaper: String,
   pub accent: String,
   pub theme: String,
+  pub glass: String,
   pub revision: u64,
 }
 ```
+
+```rust
+pub enum GlassAmount {
+  Much,
+  Glass,
+  Less,
+}
+```
+
+`GlassAmount::from_str` returns `None` for unknown input;
+`CustomizeSettings::glass_amount` falls back to `Glass`. Exposes `as_str`
+round-tripping the store spelling.
 
 ```rust
 pub enum ThemeMode {
@@ -79,6 +93,7 @@ pub fn set(
   wallpaper: Option<&str>,
   accent: Option<&str>,
   theme: Option<&str>,
+  glass: Option<&str>,
 ) -> Result<CustomizeSettings, String>;
 ```
 

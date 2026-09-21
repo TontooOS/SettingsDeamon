@@ -16,7 +16,9 @@ pub mod wired;
 pub use config::{
   DaemonConfig, DEFAULT_OS_FICO_PATH, DEFAULT_SOCKET_PATH, DEFAULT_STORE_PATH, DEFAULT_SYS_FICO_PATH,
 };
-pub use customize::{CustomizeSettings, ACCENTS, THEMES};
+pub use customize::{
+  AccentColor, CustomizeSettings, ThemeMode, ACCENTS, THEMES,
+};
 pub use display::{DisplayMode, DisplayOutput, DisplayState};
 pub use wallpaper::{WallpaperEntry, WallpaperState, FILL_MODES};
 

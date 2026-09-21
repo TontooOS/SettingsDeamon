@@ -50,10 +50,11 @@ use crate::store::SettingsStore;
 // them, only the Settings app (`com.tontoo.systemsettings`) may call them.
 //
 // `customize_get` is a public read op returning the effective
-// customization (`{"wallpaper", "accent", "theme"}`).
+// customization (`{"wallpaper", "accent", "theme", "revision"}`).
 // `customize_set` is a private write op with the same visibility rule as
 // the `wifi_*` write ops: partial `{"wallpaper"?, "accent"?, "theme"?}`
-// params, validated before anything is persisted.
+// params, validated before anything is persisted. Every successful set
+// bumps `revision` so clients can poll for changes.
 //
 // `wallpaper_get` is a public read op returning the full wallpaper state
 // (`current`, `fill`, `customs`, `premade`).

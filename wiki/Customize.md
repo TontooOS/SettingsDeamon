@@ -12,19 +12,23 @@ Stored keys under the `customize` domain:
 
 ```json
 {
-  "customize": { "wallpaper": "THAOELAKE", "accent": "orange", "theme": "dark" }
+  "customize": { "wallpaper": "THAOELAKE", "accent": "multicolor", "theme": "dark", "revision": 3 }
 }
 ```
 
 - `wallpaper` is a wallpaper pack id (e.g. `"THAOELAKE"`, see the
   `BaseOS/wallpapers` packs staged at `/System/User/Wallpapers`).
-- `accent` is one of `orange`, `blue`, `green`, `purple`.
+- `accent` is one of `multicolor` (default element, renders blue), `blue`,
+  `red`, `orange`, `yellow`, `green`, `teal`, `cyan`, `indigo`, `purple`,
+  `purple2`, `pink`, `gray` (Settings app palette).
 - `theme` is `dark` or `light`.
+- `revision` bumps on every successful `customize_set` so clients can poll
+  for changes.
 
-Missing keys fall back to `THAOELAKE` / `orange` / `dark`. Invalid stored
-values (unknown accent/theme, empty wallpaper) fall back to the defaults
-on read and are rejected with an error on write, so a corrupt store file
-can never produce an invalid reply.
+Missing keys fall back to `THAOELAKE` / `multicolor` / `dark` / `0`.
+Invalid stored values (unknown accent/theme, empty wallpaper) fall back to
+the defaults on read and are rejected with an error on write, so a corrupt
+store file can never produce an invalid reply.
 
 ## API
 
@@ -33,8 +37,40 @@ pub struct CustomizeSettings {
   pub wallpaper: String,
   pub accent: String,
   pub theme: String,
+  pub revision: u64,
 }
 ```
+
+```rust
+pub enum ThemeMode {
+  Dark,
+  Light,
+}
+```
+
+```rust
+pub enum AccentColor {
+  Multicolor,
+  Blue,
+  Red,
+  Orange,
+  Yellow,
+  Green,
+  Teal,
+  Cyan,
+  Indigo,
+  Purple,
+  Purple2,
+  Pink,
+  Gray,
+}
+```
+
+`ThemeMode::from_str` returns `None` for unknown input;
+`CustomizeSettings::theme_mode` falls back to `Dark`.
+`AccentColor::from_str` returns `None` for unknown input;
+`CustomizeSettings::accent_color` falls back to `Multicolor`.
+Both expose `as_str` round-tripping the store spelling.
 
 ```rust
 pub fn get(store: &SettingsStore) -> CustomizeSettings;

@@ -24,18 +24,120 @@ pub const KEY_WALLPAPER: &str = "wallpaper";
 pub const KEY_ACCENT: &str = "accent";
 /// Color theme (one of `THEMES`).
 pub const KEY_THEME: &str = "theme";
+/// Revision counter, bumped on every successful `customize_set` so clients
+/// can poll cheaply for changes.
+pub const KEY_REVISION: &str = "revision";
 
 pub const OP_CUSTOMIZE_GET: &str = "customize_get";
 pub const OP_CUSTOMIZE_SET: &str = "customize_set";
 
 pub const DEFAULT_WALLPAPER: &str = "THAOELAKE";
-pub const DEFAULT_ACCENT: &str = "orange";
+pub const DEFAULT_ACCENT: &str = "multicolor";
 pub const DEFAULT_THEME: &str = "dark";
 
-/// Accent colors accepted by `customize_set`.
-pub const ACCENTS: &[&str] = &["orange", "blue", "green", "purple"];
+/// Accent colors accepted by `customize_set`. Mirrors the Settings app
+/// palette plus the `multicolor` default element (renders as blue).
+pub const ACCENTS: &[&str] = &[
+  "multicolor",
+  "blue",
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "teal",
+  "cyan",
+  "indigo",
+  "purple",
+  "purple2",
+  "pink",
+  "gray",
+];
 /// Themes accepted by `customize_set`.
 pub const THEMES: &[&str] = &["dark", "light"];
+
+/// Color theme with typed dark/light handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+  Dark,
+  Light,
+}
+
+impl ThemeMode {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Dark => "dark",
+      Self::Light => "light",
+    }
+  }
+
+  pub fn from_str(raw: &str) -> Option<Self> {
+    match raw {
+      "dark" => Some(Self::Dark),
+      "light" => Some(Self::Light),
+      _ => None,
+    }
+  }
+}
+
+/// Accent color with typed handling. `Multicolor` is the default element
+/// and renders as blue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccentColor {
+  Multicolor,
+  Blue,
+  Red,
+  Orange,
+  Yellow,
+  Green,
+  Teal,
+  Cyan,
+  Indigo,
+  Purple,
+  Purple2,
+  Pink,
+  Gray,
+}
+
+impl AccentColor {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Multicolor => "multicolor",
+      Self::Blue => "blue",
+      Self::Red => "red",
+      Self::Orange => "orange",
+      Self::Yellow => "yellow",
+      Self::Green => "green",
+      Self::Teal => "teal",
+      Self::Cyan => "cyan",
+      Self::Indigo => "indigo",
+      Self::Purple => "purple",
+      Self::Purple2 => "purple2",
+      Self::Pink => "pink",
+      Self::Gray => "gray",
+    }
+  }
+
+  pub fn from_str(raw: &str) -> Option<Self> {
+    match raw {
+      "multicolor" => Some(Self::Multicolor),
+      "blue" => Some(Self::Blue),
+      "red" => Some(Self::Red),
+      "orange" => Some(Self::Orange),
+      "yellow" => Some(Self::Yellow),
+      "green" => Some(Self::Green),
+      "teal" => Some(Self::Teal),
+      "cyan" => Some(Self::Cyan),
+      "indigo" => Some(Self::Indigo),
+      "purple" => Some(Self::Purple),
+      "purple2" => Some(Self::Purple2),
+      "pink" => Some(Self::Pink),
+      "gray" => Some(Self::Gray),
+      _ => None,
+    }
+  }
+}
 
 /// Effective customization: stored values overlaid on the defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +145,7 @@ pub struct CustomizeSettings {
   pub wallpaper: String,
   pub accent: String,
   pub theme: String,
+  pub revision: u64,
 }
 
 impl Default for CustomizeSettings {
@@ -51,7 +154,18 @@ impl Default for CustomizeSettings {
       wallpaper: DEFAULT_WALLPAPER.to_string(),
       accent: DEFAULT_ACCENT.to_string(),
       theme: DEFAULT_THEME.to_string(),
+      revision: 0,
     }
+  }
+}
+
+impl CustomizeSettings {
+  pub fn theme_mode(&self) -> ThemeMode {
+    ThemeMode::from_str(&self.theme).unwrap_or(ThemeMode::Dark)
+  }
+
+  pub fn accent_color(&self) -> AccentColor {
+    AccentColor::from_str(&self.accent).unwrap_or(AccentColor::Multicolor)
   }
 }
 
@@ -81,6 +195,9 @@ pub fn get(store: &SettingsStore) -> CustomizeSettings {
     if valid_theme(value) {
       settings.theme = value.to_string();
     }
+  }
+  if let Some(value) = store.get(DOMAIN, KEY_REVISION).and_then(|v| v.as_u64()) {
+    settings.revision = value;
   }
   settings
 }
@@ -123,6 +240,11 @@ pub fn set(
   if let Some(value) = theme {
     guard.set(DOMAIN, KEY_THEME, serde_json::json!(value));
   }
+  let revision = get(&guard)
+    .revision
+    .checked_add(1)
+    .unwrap_or(u64::MAX);
+  guard.set(DOMAIN, KEY_REVISION, serde_json::json!(revision));
   let effective = get(&guard);
   guard
     .save()
@@ -177,6 +299,7 @@ mod tests {
         wallpaper: "SONOMA".to_string(),
         accent: "blue".to_string(),
         theme: "light".to_string(),
+        revision: 0,
       }
     );
   }
@@ -199,6 +322,22 @@ mod tests {
     assert_eq!(applied.wallpaper, "VENTURA");
     assert_eq!(applied.accent, DEFAULT_ACCENT);
     assert_eq!(applied.theme, "light");
+    assert_eq!(applied.revision, 1);
+    let applied = set(&store, None, Some("multicolor"), None).unwrap();
+    assert_eq!(applied.revision, 2);
+    assert_eq!(applied.accent_color(), AccentColor::Multicolor);
+    assert_eq!(applied.theme_mode(), ThemeMode::Light);
     let _ = std::fs::remove_file("/tmp/tontoo-settings-customize-test.json");
+  }
+
+  #[test]
+  fn typed_accents_cover_settings_palette() {
+    for name in ACCENTS {
+      assert!(AccentColor::from_str(name).is_some(), "missing {name}");
+      assert_eq!(AccentColor::from_str(name).unwrap().as_str(), *name);
+    }
+    assert_eq!(AccentColor::from_str("neon"), None);
+    assert_eq!(ThemeMode::from_str("dark"), Some(ThemeMode::Dark));
+    assert_eq!(ThemeMode::from_str("sepia"), None);
   }
 }

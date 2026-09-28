@@ -39,6 +39,23 @@ Request:
 | `wallpaper_delete` | Private: `{"id"}` deletes a custom (pre-switch to Tahoe Lake when current), returns `{"deleted", "switched"}` |
 | `display_get` | Full display state (`{"outputs", "brightness", "night_light"}`) |
 | `display_set` | Private: partial `{"output"?, "width"?, "height"?, "refresh"?, "brightness"?, "night_light"?}` returns the effective state |
+| `subscribe` | `{"events"?: [...]}` registers this connection for change events, returns `{"subscribed": true, "events": [...]}` |
+
+Change events (pushed, no polling needed):
+
+```json
+{"event": "customize_changed", "result": {"theme": "light", "revision": 4}}
+```
+
+| Event | Pushed after |
+|---|---|
+| `customize_changed` | Successful `customize_set` (result carries `revision`) |
+| `wallpaper_changed` | Successful `wallpaper_set_current`/`wallpaper_set_fill`/`wallpaper_add`/`wallpaper_apply`/`wallpaper_delete` |
+| `display_changed` | Successful `display_set` |
+| `datetime_changed` | Successful `datetime_set_timezone`/`datetime_set_24h` |
+| `locale_changed` | Successful `locale_set_*` |
+| `dns_changed` | Successful `dns_set` |
+| `wifi_changed` | Successful `wifi_connect`/`wifi_disconnect`/`wifi_enable`/`wifi_disable`/`wifi_forget` |
 
 Success reply:
 
@@ -74,6 +91,11 @@ Rules:
 - `display_get` is public; `display_set` follows the same visibility
   rule (Settings app only): forwards live to the compositor, then
   persists.
+- `subscribe` is public: the connection receives
+  `{"event", "result"}` frames after every successful write op it
+  listens for (`params.events` array, empty or missing means all
+  events). Dead connections are dropped silently. Clients with a
+  subscription need no polling.
 
 ## API
 

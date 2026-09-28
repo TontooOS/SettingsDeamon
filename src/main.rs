@@ -77,8 +77,9 @@ fn main() {
 
   let store = Arc::new(Mutex::new(store));
   let libs = Arc::new(Mutex::new(LibraryManager::new()));
+  let broadcaster = socket::Broadcaster::shared();
 
-  if let Err(e) = socket::run_server(&config, store, libs) {
+  if let Err(e) = socket::run_server(&config, store, libs, broadcaster) {
     log::error!("socket server failed: {}", e);
     std::process::exit(1);
   }

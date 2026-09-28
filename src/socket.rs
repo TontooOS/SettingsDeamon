@@ -1,6 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use crate::config::DaemonConfig;
 use crate::json::JsonValue;
@@ -65,19 +65,115 @@ use crate::store::SettingsStore;
 // only, nothing here applies the wallpaper to the desktop.
 // `wallpaper_apply` resolves the variant file and forwards it to the
 // compositor for the desktop crossfade, then persists the selection.
+//
+// `subscribe` registers the connection for change events: after every
+// successful write op the daemon pushes
+// `{"event": "<domain>_changed", "result": {...}}` frames on connections
+// subscribed to that event (empty filter means all events). Subscribed
+// clients need no polling; `revision` in `customize_changed` payloads
+// keeps poll-based clients in sync.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
 pub const OP_GET_OS: &str = "get_os";
+pub const OP_SUBSCRIBE: &str = "subscribe";
+
+/// Event pushed after a successful WiFi write op.
+pub const EVENT_WIFI_CHANGED: &str = "wifi_changed";
+/// Event pushed after a successful `dns_set`.
+pub const EVENT_DNS_CHANGED: &str = "dns_changed";
+/// Event pushed after a successful `datetime_set_*`.
+pub const EVENT_DATETIME_CHANGED: &str = "datetime_changed";
+/// Event pushed after a successful `locale_set_*`.
+pub const EVENT_LOCALE_CHANGED: &str = "locale_changed";
+/// Event pushed after a successful `customize_set` (carries `revision`).
+pub const EVENT_CUSTOMIZE_CHANGED: &str = "customize_changed";
+/// Event pushed after a successful `wallpaper_*` write op.
+pub const EVENT_WALLPAPER_CHANGED: &str = "wallpaper_changed";
+/// Event pushed after a successful `display_set`.
+pub const EVENT_DISPLAY_CHANGED: &str = "display_changed";
+
+#[derive(Debug)]
+struct Subscriber {
+  id: u64,
+  sender: mpsc::Sender<String>,
+  filter: Vec<String>,
+}
+
+/// Fan-out for daemon change events. Connections register with `subscribe`
+/// and receive `{"event": name, "result": {...}}` frames whenever a write
+/// op they listen for succeeds, so clients need no polling.
+#[derive(Debug, Default)]
+pub struct Broadcaster {
+  next_id: Mutex<u64>,
+  subscribers: Mutex<Vec<Subscriber>>,
+}
+
+impl Broadcaster {
+  pub fn new() -> Self {
+    Self {
+      next_id: Mutex::new(1),
+      subscribers: Mutex::new(Vec::new()),
+    }
+  }
+
+  /// Shared handle for the server and its connection threads.
+  pub fn shared() -> Arc<Self> {
+    Arc::new(Self::new())
+  }
+
+  /// Register a subscriber. An empty filter receives every event.
+  /// Returns the subscription id plus the receiving end.
+  fn register(&self, filter: Vec<String>) -> (u64, mpsc::Receiver<String>) {
+    let (sender, receiver) = mpsc::channel();
+    let mut next = self.next_id.lock().unwrap();
+    let id = *next;
+    *next += 1;
+    drop(next);
+    self.subscribers.lock().unwrap().push(Subscriber { id, sender, filter });
+    (id, receiver)
+  }
+
+  /// Drop a subscription. Missing ids are ignored.
+  fn unregister(&self, id: u64) {
+    self.subscribers.lock().unwrap().retain(|s| s.id != id);
+  }
+
+  /// Push an event to every matching subscriber. Dead receivers are
+  /// dropped. Never blocks, never fails.
+  pub fn publish(&self, event: &str, result: &JsonValue) {
+    let mut line = JsonValue::Object(vec![
+      ("event".to_string(), JsonValue::Str(event.to_string())),
+      ("result".to_string(), result.clone()),
+    ])
+    .stringify(false);
+    line.push('\n');
+    self.subscribers.lock().unwrap().retain(|subscriber| {
+      if subscriber.filter.is_empty()
+        || subscriber.filter.iter().any(|name| name == event)
+      {
+        subscriber.sender.send(line.clone()).is_ok()
+      } else {
+        true
+      }
+    });
+  }
+
+  #[cfg(test)]
+  fn subscriber_count(&self) -> usize {
+    self.subscribers.lock().unwrap().len()
+  }
+}
 
 /// Socket server with the read protocol. One thread per connection shares
 /// the store so `customize_set` and wallpaper selection writes are visible
-/// to every client.
+/// to every client. `broadcaster` fans write-op events out to subscribers.
 #[cfg(target_os = "linux")]
 pub fn run_server(
   config: &DaemonConfig,
   store: Arc<Mutex<SettingsStore>>,
   _libs: Arc<Mutex<LibraryManager>>,
+  broadcaster: Arc<Broadcaster>,
 ) -> io::Result<()> {
   use std::os::unix::net::UnixListener;
 
@@ -92,7 +188,8 @@ pub fn run_server(
         let sys = config.sys_fico_path.clone();
         let os = config.os_fico_path.clone();
         let store = store.clone();
-        std::thread::spawn(move || serve_connection(stream, sys, os, store));
+        let broadcaster = broadcaster.clone();
+        std::thread::spawn(move || serve_connection(stream, sys, os, store, broadcaster));
       }
       Err(e) => log::warn!("accept failed: {}", e),
     }
@@ -107,6 +204,7 @@ pub fn run_server(
   _config: &DaemonConfig,
   _store: Arc<Mutex<SettingsStore>>,
   _libs: Arc<Mutex<LibraryManager>>,
+  _broadcaster: Arc<Broadcaster>,
 ) -> io::Result<()> {
   Err(io::Error::new(
     io::ErrorKind::Unsupported,
@@ -115,13 +213,15 @@ pub fn run_server(
 }
 
 /// Serve one connection until EOF or a fatal I/O error. Malformed lines get
-/// an error frame, the connection stays open.
+/// an error frame, the connection stays open. A successful `subscribe`
+/// spawns a writer thread pushing event frames until the connection drops.
 #[cfg(target_os = "linux")]
 fn serve_connection(
   stream: std::os::unix::net::UnixStream,
   sys: PathBuf,
   os: PathBuf,
   store: Arc<Mutex<SettingsStore>>,
+  broadcaster: Arc<Broadcaster>,
 ) {
   use std::io::{BufRead, BufReader, Write};
 
@@ -129,7 +229,8 @@ fn serve_connection(
     Ok(clone) => BufReader::new(clone),
     Err(_) => return,
   };
-  let mut writer = stream;
+  let writer = Arc::new(Mutex::new(stream));
+  let mut subscription_id: Option<u64> = None;
   let mut line = String::new();
   loop {
     line.clear();
@@ -138,22 +239,59 @@ fn serve_connection(
       Ok(_) => {}
       Err(_) => break,
     }
-    let frame = handle_line(&line, &sys, &os, &store);
+    let mut pending_filter = None;
+    let frame = handle_line(&line, &sys, &os, &store, &broadcaster, &mut pending_filter);
+    if let Some(filter) = pending_filter.take() {
+      if let Some(id) = subscription_id.take() {
+        broadcaster.unregister(id);
+      }
+      let (id, events) = broadcaster.register(filter);
+      subscription_id = Some(id);
+      let writer_clone = writer.clone();
+      let broadcaster_clone = broadcaster.clone();
+      std::thread::spawn(move || {
+        for message in events {
+          let delivered = writer_clone
+            .lock()
+            .map(|mut stream| {
+              stream.write_all(message.as_bytes()).and_then(|_| stream.flush()).is_ok()
+            })
+            .unwrap_or(false);
+          if !delivered {
+            break;
+          }
+        }
+        broadcaster_clone.unregister(id);
+      });
+    }
     let mut out = frame.stringify(false);
     out.push('\n');
-    if writer.write_all(out.as_bytes()).is_err() || writer.flush().is_err() {
+    let delivered = writer
+      .lock()
+      .map(|mut stream| {
+        stream.write_all(out.as_bytes()).and_then(|_| stream.flush()).is_ok()
+      })
+      .unwrap_or(false);
+    if !delivered {
       break;
     }
+  }
+  if let Some(id) = subscription_id {
+    broadcaster.unregister(id);
   }
 }
 
 /// Parse one request line and dispatch it. Never panics, always returns a
 /// frame with the request `id` (0 when the line has no usable id).
+/// A successful `subscribe` additionally reports its event filter through
+/// `out_subscribe` so the caller can attach the connection.
 fn handle_line(
   line: &str,
   sys: &Path,
   os: &Path,
   store: &Arc<Mutex<SettingsStore>>,
+  broadcaster: &Broadcaster,
+  out_subscribe: &mut Option<Vec<String>>,
 ) -> JsonValue {
   let request = match JsonValue::parse(line) {
     Ok(value) => value,
@@ -162,7 +300,7 @@ fn handle_line(
   let id = crate::json::frame_id(&request);
   let op = crate::json::frame_op(&request);
   let params = crate::json::frame_params(&request);
-  dispatch(id, &op, &params, sys, os, store)
+  dispatch(id, &op, &params, sys, os, store, broadcaster, out_subscribe)
 }
 
 fn dispatch(
@@ -172,12 +310,44 @@ fn dispatch(
   sys: &Path,
   os: &Path,
   store: &Arc<Mutex<SettingsStore>>,
+  broadcaster: &Broadcaster,
+  out_subscribe: &mut Option<Vec<String>>,
 ) -> JsonValue {
   match op {
     OP_PING => success_frame(
       id,
       JsonValue::Object(vec![("pong".to_string(), JsonValue::Bool(true))]),
     ),
+    OP_SUBSCRIBE => {
+      let filter = match params.get("events") {
+        None | Some(JsonValue::Null) => Vec::new(),
+        Some(JsonValue::Array(items)) => {
+          let mut names = Vec::with_capacity(items.len());
+          for item in items {
+            match item.as_str() {
+              Some(name) => names.push(name.to_string()),
+              None => {
+                return error_frame(id, "subscribe failed: events must be strings".to_string());
+              }
+            }
+          }
+          names
+        }
+        Some(_) => {
+          return error_frame(id, "subscribe failed: events must be an array".to_string());
+        }
+      };
+      let reply_events =
+        JsonValue::Array(filter.iter().map(|name| JsonValue::Str(name.clone())).collect());
+      *out_subscribe = Some(filter);
+      success_frame(
+        id,
+        JsonValue::Object(vec![
+          ("subscribed".to_string(), JsonValue::Bool(true)),
+          ("events".to_string(), reply_events),
+        ]),
+      )
+    }
     OP_GET_HARDWARE => match read_fico_json(sys) {
       Ok(json) => success_frame(id, json),
       Err(e) => error_frame(id, format!("sys.fico unavailable: {}", e)),
@@ -215,38 +385,47 @@ fn dispatch(
       let password = params.get("password").and_then(|v| v.as_str());
       let hidden = params.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::wifi::connect(ssid, password, hidden) {
-        Ok(status) => success_frame(id, crate::wifi::status_to_json(&status)),
+        Ok(status) => {
+          let payload = crate::wifi::status_to_json(&status);
+          broadcaster.publish(EVENT_WIFI_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, format!("wifi connect failed: {}", e)),
       }
     }
     crate::wifi::OP_WIFI_DISCONNECT => match crate::wifi::disconnect() {
-      Ok(()) => success_frame(
-        id,
-        JsonValue::Object(vec![("disconnected".to_string(), JsonValue::Bool(true))]),
-      ),
+      Ok(()) => {
+        let payload = JsonValue::Object(vec![("disconnected".to_string(), JsonValue::Bool(true))]);
+        broadcaster.publish(EVENT_WIFI_CHANGED, &payload);
+        success_frame(id, payload)
+      }
       Err(e) => error_frame(id, format!("wifi disconnect failed: {}", e)),
     },
     crate::wifi::OP_WIFI_ENABLE => match crate::wifi::set_enabled(true) {
-      Ok(()) => success_frame(
-        id,
-        JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(true))]),
-      ),
+      Ok(()) => {
+        let payload = JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(true))]);
+        broadcaster.publish(EVENT_WIFI_CHANGED, &payload);
+        success_frame(id, payload)
+      }
       Err(e) => error_frame(id, format!("wifi enable failed: {}", e)),
     },
     crate::wifi::OP_WIFI_DISABLE => match crate::wifi::set_enabled(false) {
-      Ok(()) => success_frame(
-        id,
-        JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(false))]),
-      ),
+      Ok(()) => {
+        let payload = JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(false))]);
+        broadcaster.publish(EVENT_WIFI_CHANGED, &payload);
+        success_frame(id, payload)
+      }
       Err(e) => error_frame(id, format!("wifi disable failed: {}", e)),
     },
     crate::wifi::OP_WIFI_FORGET => {
       let ssid = params.get("ssid").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wifi::forget(ssid) {
-        Ok(removed) => success_frame(
-          id,
-          JsonValue::Object(vec![("forgotten".to_string(), JsonValue::Bool(removed))]),
-        ),
+        Ok(removed) => {
+          let payload =
+            JsonValue::Object(vec![("forgotten".to_string(), JsonValue::Bool(removed))]);
+          broadcaster.publish(EVENT_WIFI_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, format!("wifi forget failed: {}", e)),
       }
     }
@@ -257,7 +436,11 @@ fn dispatch(
     crate::dns::OP_DNS_SET => {
       let servers = params.get("servers").and_then(|v| v.as_str()).unwrap_or("");
       match crate::dns::set_from_str(servers) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_DNS_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, format!("dns set failed: {}", e)),
       }
     }
@@ -278,14 +461,22 @@ fn dispatch(
     crate::datetime::OP_DATETIME_SET_TIMEZONE => {
       let timezone = params.get("timezone").and_then(|v| v.as_str()).unwrap_or("");
       match crate::datetime::set_timezone(store, timezone) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_DATETIME_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
     crate::datetime::OP_DATETIME_SET_24H => {
       let use_24h = params.get("use_24h").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::datetime::set_24h(store, use_24h) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_DATETIME_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -296,14 +487,22 @@ fn dispatch(
     crate::locale::OP_LOCALE_SET_LANGUAGE => {
       let language = params.get("language").and_then(|v| v.as_str()).unwrap_or("");
       match crate::locale::set_language(store, language) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_LOCALE_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
     crate::locale::OP_LOCALE_SET_REGION => {
       let region = params.get("region").and_then(|v| v.as_str()).unwrap_or("");
       match crate::locale::set_region(store, region) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_LOCALE_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -311,14 +510,22 @@ fn dispatch(
       let layout = params.get("layout").and_then(|v| v.as_str()).unwrap_or("");
       let variant = params.get("variant").and_then(|v| v.as_str());
       match crate::locale::set_keymap(store, layout, variant) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_LOCALE_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
     crate::locale::OP_LOCALE_SET_AUTO_KEYMAP => {
       let auto = params.get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::locale::set_auto_keymap(store, auto) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_LOCALE_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -347,7 +554,11 @@ fn dispatch(
       let theme = params.get("theme").and_then(|v| v.as_str());
       let glass = params.get("glass").and_then(|v| v.as_str());
       match crate::customize::set(store, wallpaper, accent, theme, glass) {
-        Ok(settings) => success_frame(id, settings.to_json_value()),
+        Ok(settings) => {
+          let payload = settings.to_json_value();
+          broadcaster.publish(EVENT_CUSTOMIZE_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -359,23 +570,25 @@ fn dispatch(
       let kind = params.get("kind").and_then(|v| v.as_str()).unwrap_or("");
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::set_current(store, kind, entry_id) {
-        Ok(entry) => success_frame(
-          id,
-          match entry {
+        Ok(entry) => {
+          let payload = match entry {
             Some(entry) => entry.to_json_value(),
             None => JsonValue::Null,
-          },
-        ),
+          };
+          broadcaster.publish(EVENT_WALLPAPER_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
     crate::wallpaper::OP_WALLPAPER_SET_FILL => {
       let fill = params.get("fill").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::set_fill(store, fill) {
-        Ok(applied) => success_frame(
-          id,
-          JsonValue::Object(vec![("fill".to_string(), JsonValue::Str(applied))]),
-        ),
+        Ok(applied) => {
+          let payload = JsonValue::Object(vec![("fill".to_string(), JsonValue::Str(applied))]);
+          broadcaster.publish(EVENT_WALLPAPER_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -383,7 +596,11 @@ fn dispatch(
       let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
       let name = params.get("name").and_then(|v| v.as_str());
       match crate::wallpaper::add(Path::new(path), name) {
-        Ok(entry) => success_frame(id, entry.to_json_value()),
+        Ok(entry) => {
+          let payload = entry.to_json_value();
+          broadcaster.publish(EVENT_WALLPAPER_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -392,20 +609,25 @@ fn dispatch(
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       let variant = params.get("variant").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::apply(store, kind, entry_id, variant) {
-        Ok(entry) => success_frame(id, entry.to_json_value()),
+        Ok(entry) => {
+          let payload = entry.to_json_value();
+          broadcaster.publish(EVENT_WALLPAPER_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
     crate::wallpaper::OP_WALLPAPER_DELETE => {
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::delete(store, entry_id) {
-        Ok(switched) => success_frame(
-          id,
-          JsonValue::Object(vec![
+        Ok(switched) => {
+          let payload = JsonValue::Object(vec![
             ("deleted".to_string(), JsonValue::Bool(true)),
             ("switched".to_string(), JsonValue::Bool(switched)),
-          ]),
-        ),
+          ]);
+          broadcaster.publish(EVENT_WALLPAPER_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -425,7 +647,11 @@ fn dispatch(
       let brightness = params.get("brightness").and_then(|v| v.as_f64());
       let night_light = params.get("night_light").and_then(|v| v.as_bool());
       match crate::display::set(store, output, width, height, refresh, brightness, night_light) {
-        Ok(state) => success_frame(id, state.to_json_value()),
+        Ok(state) => {
+          let payload = state.to_json_value();
+          broadcaster.publish(EVENT_DISPLAY_CHANGED, &payload);
+          success_frame(id, payload)
+        }
         Err(e) => error_frame(id, e),
       }
     }
@@ -472,10 +698,6 @@ mod tests {
     (key.to_string(), JsonValue::Bool(value))
   }
 
-  fn num_param(key: &str, value: i64) -> (String, JsonValue) {
-    (key.to_string(), JsonValue::Integer(value))
-  }
-
   fn float_param(key: &str, value: f64) -> (String, JsonValue) {
     (key.to_string(), JsonValue::Float(value))
   }
@@ -505,10 +727,14 @@ mod tests {
     ))))
   }
 
+  fn bc() -> Broadcaster {
+    Broadcaster::new()
+  }
+
   #[test]
   fn ping_frame() {
     let store = memory_store();
-    let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
+    let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store, &bc(), &mut None);
     assert_eq!(frame.get("id").and_then(|v| v.as_i64()), Some(7));
     assert_eq!(ok_of(&frame), Some(true));
     assert_eq!(result_of(&frame).and_then(|r| r.get("pong")).and_then(|v| v.as_bool()), Some(true));
@@ -517,7 +743,7 @@ mod tests {
   #[test]
   fn unknown_op_frame() {
     let store = memory_store();
-    let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
+    let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store, &bc(), &mut None);
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown op"));
   }
@@ -525,7 +751,7 @@ mod tests {
   #[test]
   fn invalid_line_frame() {
     let store = memory_store();
-    let frame = handle_line("not json\n", Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
+    let frame = handle_line("not json\n", Path::new("/nonexistent"), Path::new("/nonexistent"), &store, &bc(), &mut None);
     assert_eq!(frame.get("id").and_then(|v| v.as_i64()), Some(0));
     assert_eq!(ok_of(&frame), Some(false));
   }
@@ -533,7 +759,7 @@ mod tests {
   #[test]
   fn missing_file_frame() {
     let store = memory_store();
-    let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"), &store);
+    let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"), &store, &bc(), &mut None);
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("os.fico unavailable"));
   }
@@ -547,7 +773,7 @@ mod tests {
       &JsonValue::Object(vec![]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("wifi connect failed"));
@@ -562,7 +788,7 @@ mod tests {
       &JsonValue::Object(vec![]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("wifi forget failed"));
@@ -577,7 +803,7 @@ mod tests {
       &params(vec![str_param("servers", "not-an-ip")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("dns set failed"));
@@ -592,7 +818,7 @@ mod tests {
       &no_params(),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(true));
     let result = result_of(&frame).unwrap();
@@ -614,7 +840,7 @@ mod tests {
       ]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(true));
     assert_eq!(result_of(&frame).and_then(|r| r.get("wallpaper")).and_then(|v| v.as_str()), Some("SONOMA"));
@@ -625,7 +851,7 @@ mod tests {
       &no_params(),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(result_of(&frame).and_then(|r| r.get("accent")).and_then(|v| v.as_str()), Some("blue"));
 
@@ -635,7 +861,7 @@ mod tests {
       &params(vec![str_param("theme", "sepia")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown theme"));
@@ -651,7 +877,7 @@ mod tests {
       &no_params(),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(true));
     let result = result_of(&frame).unwrap();
@@ -677,7 +903,7 @@ mod tests {
       &params(vec![str_param("fill", "tile")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(true));
     assert_eq!(result_of(&frame).and_then(|r| r.get("fill")).and_then(|v| v.as_str()), Some("tile"));
@@ -687,7 +913,7 @@ mod tests {
       &params(vec![str_param("fill", "melt")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown fill mode"));
@@ -707,7 +933,7 @@ mod tests {
       &params(vec![str_param("kind", "orb"), str_param("id", "FLOW")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown kind"));
@@ -722,7 +948,7 @@ mod tests {
       &params(vec![str_param("path", "/nonexistent-wallpaper-test/missing.png")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("file not found"));
@@ -741,7 +967,7 @@ mod tests {
       ]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown variant"));
@@ -756,7 +982,7 @@ mod tests {
       &params(vec![str_param("id", "ghost")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unknown custom wallpaper"));
@@ -771,7 +997,7 @@ mod tests {
       &params(vec![float_param("brightness", 120.0)]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("invalid brightness"));
@@ -791,7 +1017,7 @@ mod tests {
       &no_params(),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(false));
     assert!(error_text(&frame).contains("unreachable"));
@@ -863,7 +1089,7 @@ mod tests {
       &params(vec![float_param("brightness", 80.0), bool_param("night_light", true)]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
-      &store,
+      &store, &bc(), &mut None,
     );
     assert_eq!(ok_of(&frame), Some(true));
     let result = result_of(&frame).unwrap();
@@ -897,7 +1123,7 @@ mod tests {
     let store = Arc::new(Mutex::new(SettingsStore::new(
       dir.join("socket-test-settings.json"),
     )));
-    std::thread::spawn(move || serve_connection(server, sys_clone, os_clone, store));
+    std::thread::spawn(move || serve_connection(server, sys_clone, os_clone, store, Broadcaster::shared()));
 
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
@@ -925,5 +1151,172 @@ mod tests {
 
     let _ = std::fs::remove_file(&os_path);
     let _ = std::fs::remove_file(&sys_path);
+  }
+
+  #[test]
+  fn subscribe_reports_filter_and_registers_nothing_by_itself() {
+    // dispatch alone never touches the registry: attaching the connection
+    // is the connection loop's job (it owns the stream).
+    let store = memory_store();
+    let bc = bc();
+    let mut pending = None;
+    let frame = dispatch(
+      1,
+      OP_SUBSCRIBE,
+      &params(vec![str_param("events", "x")]),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+      &bc,
+      &mut pending,
+    );
+    // Wrong shape on purpose: events must be an array, not a string.
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("events must be an array"));
+    assert_eq!(pending, None);
+    assert_eq!(bc.subscriber_count(), 0);
+  }
+
+  #[test]
+  fn subscribe_accepts_filter_and_empty_means_all() {
+    let store = memory_store();
+    let bc = bc();
+    let mut pending = None;
+    let frame = dispatch(
+      2,
+      OP_SUBSCRIBE,
+      &params(vec![(
+        "events".to_string(),
+        JsonValue::Array(vec![JsonValue::Str(EVENT_CUSTOMIZE_CHANGED.to_string())]),
+      )]),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+      &bc,
+      &mut pending,
+    );
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(
+      pending,
+      Some(vec![EVENT_CUSTOMIZE_CHANGED.to_string()])
+    );
+
+    let mut pending = None;
+    let frame = dispatch(
+      3,
+      OP_SUBSCRIBE,
+      &JsonValue::Object(vec![]),
+      Path::new("/nonexistent"),
+      Path::new("/nonexistent"),
+      &store,
+      &bc,
+      &mut pending,
+    );
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(pending, Some(vec![]));
+  }
+
+  #[test]
+  fn publish_reaches_matching_subscribers_only() {
+    let bc = Broadcaster::new();
+    let (_, filtered_rx) = bc.register(vec![EVENT_CUSTOMIZE_CHANGED.to_string()]);
+    let (_, all_rx) = bc.register(vec![]);
+    bc.publish(
+      EVENT_CUSTOMIZE_CHANGED,
+      &JsonValue::Object(vec![("theme".to_string(), JsonValue::Str("light".to_string()))]),
+    );
+    bc.publish(
+      EVENT_WIFI_CHANGED,
+      &JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(true))]),
+    );
+    let first = JsonValue::parse(&filtered_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap()).unwrap();
+    assert_eq!(first.get("event").and_then(|v| v.as_str()), Some(EVENT_CUSTOMIZE_CHANGED));
+    assert_eq!(
+      first.get("result").and_then(|r| r.get("theme")).and_then(|v| v.as_str()),
+      Some("light")
+    );
+    assert!(filtered_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+
+    let mut names = Vec::new();
+    for _ in 0..2 {
+      let frame = JsonValue::parse(&all_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap()).unwrap();
+      names.push(frame.get("event").and_then(|v| v.as_str()).unwrap().to_string());
+    }
+    names.sort();
+    assert_eq!(names, vec![EVENT_CUSTOMIZE_CHANGED.to_string(), EVENT_WIFI_CHANGED.to_string()]);
+  }
+
+  #[test]
+  fn dead_subscribers_are_dropped() {
+    let bc = Broadcaster::new();
+    let (_, rx) = bc.register(vec![]);
+    assert_eq!(bc.subscriber_count(), 1);
+    drop(rx);
+    bc.publish(EVENT_DNS_CHANGED, &JsonValue::Null);
+    assert_eq!(bc.subscriber_count(), 0);
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn subscribed_connection_receives_customize_event() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let dir = std::env::temp_dir().join("settings-daemon-subscribe-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let (client, server) = UnixStream::pair().unwrap();
+    let store = Arc::new(Mutex::new(SettingsStore::new(
+      dir.join("socket-test-settings.json"),
+    )));
+    let bc = Broadcaster::shared();
+    let bc_clone = bc.clone();
+    std::thread::spawn(move || {
+      serve_connection(
+        server,
+        PathBuf::from("/nonexistent"),
+        PathBuf::from("/nonexistent"),
+        store,
+        bc_clone,
+      )
+    });
+
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+    let mut line = String::new();
+    writer
+      .write_all(b"{\"id\": 1, \"op\": \"subscribe\", \"params\": {\"events\": [\"customize_changed\"]}}\n")
+      .unwrap();
+    writer.flush().unwrap();
+    reader.read_line(&mut line).unwrap();
+    let ack = JsonValue::parse(&line).unwrap();
+    assert_eq!(ok_of(&ack), Some(true));
+    assert_eq!(bc.subscriber_count(), 1);
+
+    bc.publish(
+      EVENT_CUSTOMIZE_CHANGED,
+      &JsonValue::Object(vec![
+        ("theme".to_string(), JsonValue::Str("light".to_string())),
+        ("revision".to_string(), JsonValue::Integer(9)),
+      ]),
+    );
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    let event = JsonValue::parse(&line).unwrap();
+    assert_eq!(event.get("event").and_then(|v| v.as_str()), Some(EVENT_CUSTOMIZE_CHANGED));
+    assert_eq!(
+      event.get("result").and_then(|r| r.get("revision")).and_then(|v| v.as_i64()),
+      Some(9)
+    );
+    drop(writer);
+    drop(reader);
+    // Give the connection loop a moment to notice EOF and unregister.
+    for _ in 0..50 {
+      if bc.subscriber_count() == 0 {
+        break;
+      }
+      std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(bc.subscriber_count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
   }
 }

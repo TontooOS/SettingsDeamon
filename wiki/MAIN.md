@@ -73,6 +73,11 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-28: Push events. New public `subscribe` op
+  (`{"events"?: [...]}`): subscribed connections receive
+  `{"event": "<domain>_changed", "result": {...}}` after every
+  successful write op, so apps need no polling. See
+  [Socket.md](Socket.md).
 - 2026-09-28: `set_customize.py` helper. Sends `customize_get` /
   `customize_set` over the socket like the Settings app (accent, theme,
   glass, wallpaper). See [Customize.md](Customize.md).

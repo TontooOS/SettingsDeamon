@@ -19,7 +19,8 @@ use std::collections::HashSet;
 use coredata::{PersistentContainer, StoreType};
 use networkkit::util;
 use networkkit::wifi::{Wifi, WifiNetwork, WifiStatus};
-use serde::Serialize;
+
+use crate::json::JsonValue;
 
 /// Bundle id owning the per-user daemon store (wallpaper customs, ...).
 pub const DAEMON_BUNDLE_ID: &str = "com.tontoo.settingsdaemon";
@@ -38,12 +39,94 @@ pub const OP_WIFI_DISABLE: &str = "wifi_disable";
 pub const OP_WIFI_FORGET: &str = "wifi_forget";
 
 /// One stored known network (passwords are never exposed through this type).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownNetwork {
     pub ssid: String,
     pub security: String,
     pub last_connected: i64,
     pub auto_join: bool,
+}
+
+impl KnownNetwork {
+    /// JSON shape for `wifi_known_list` (no password material).
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("ssid".to_string(), JsonValue::Str(self.ssid.clone())),
+            ("security".to_string(), JsonValue::Str(self.security.clone())),
+            ("last_connected".to_string(), JsonValue::Integer(self.last_connected)),
+            ("auto_join".to_string(), JsonValue::Bool(self.auto_join)),
+        ])
+    }
+}
+
+/// JSON shape of one scan result (mirrors NetworkKit fields).
+pub fn network_to_json(network: &WifiNetwork) -> JsonValue {
+    JsonValue::Object(vec![
+        ("ssid".to_string(), JsonValue::Str(network.ssid.clone())),
+        (
+            "bssid".to_string(),
+            match &network.bssid {
+                Some(bssid) => JsonValue::Str(bssid.clone()),
+                None => JsonValue::Null,
+            },
+        ),
+        ("signal_pct".to_string(), JsonValue::Integer(network.signal_pct as i64)),
+        (
+            "frequency_mhz".to_string(),
+            match network.frequency_mhz {
+                Some(freq) => JsonValue::Integer(freq as i64),
+                None => JsonValue::Null,
+            },
+        ),
+        ("security".to_string(), JsonValue::Str(network.security.clone())),
+        ("known".to_string(), JsonValue::Bool(network.known)),
+    ])
+}
+
+/// JSON shape of one connection status.
+pub fn status_to_json(status: &WifiStatus) -> JsonValue {
+    JsonValue::Object(vec![
+        ("interface".to_string(), JsonValue::Str(status.interface.clone())),
+        (
+            "ssid".to_string(),
+            match &status.ssid {
+                Some(ssid) => JsonValue::Str(ssid.clone()),
+                None => JsonValue::Null,
+            },
+        ),
+        (
+            "bssid".to_string(),
+            match &status.bssid {
+                Some(bssid) => JsonValue::Str(bssid.clone()),
+                None => JsonValue::Null,
+            },
+        ),
+        ("signal_pct".to_string(), JsonValue::Integer(status.signal_pct as i64)),
+        (
+            "frequency_mhz".to_string(),
+            match status.frequency_mhz {
+                Some(freq) => JsonValue::Integer(freq as i64),
+                None => JsonValue::Null,
+            },
+        ),
+        ("security".to_string(), JsonValue::Str(status.security.clone())),
+        ("state".to_string(), JsonValue::Str(status.state.clone())),
+        (
+            "ipv4".to_string(),
+            match &status.ipv4 {
+                Some(ip) => JsonValue::Str(ip.clone()),
+                None => JsonValue::Null,
+            },
+        ),
+    ])
+}
+
+/// JSON shape of an optional connection status (null when disconnected).
+pub fn opt_status_to_json(status: &Option<WifiStatus>) -> JsonValue {
+    match status {
+        Some(status) => status_to_json(status),
+        None => JsonValue::Null,
+    }
 }
 
 /// Scan nearby networks, flagging stored known networks.
@@ -69,7 +152,7 @@ pub fn mark_known(mut networks: Vec<WifiNetwork>, known: &HashSet<String>) -> Ve
 /// `available` is false when no wireless adapter exists; then `enabled` is
 /// false and `status` is null instead of an error, so clients can show the
 /// no-hardware message.
-pub fn status() -> Result<serde_json::Value, String> {
+pub fn status() -> Result<JsonValue, String> {
     let wifi = Wifi::new();
     let available = wifi.is_available();
     let (enabled, current) = if available {
@@ -79,7 +162,11 @@ pub fn status() -> Result<serde_json::Value, String> {
     } else {
         (false, None)
     };
-    Ok(serde_json::json!({"enabled": enabled, "status": current, "available": available}))
+    Ok(JsonValue::Object(vec![
+        ("enabled".to_string(), JsonValue::Bool(enabled)),
+        ("status".to_string(), opt_status_to_json(&current)),
+        ("available".to_string(), JsonValue::Bool(available)),
+    ]))
 }
 
 /// Stored known networks, most recently connected first (no passwords).
@@ -415,10 +502,11 @@ mod tests {
 
         // The public list shape serializes without any password material.
         let listed = known_list().unwrap();
-        let json = serde_json::to_value(&listed).unwrap();
-        assert!(!json.to_string().contains("s3cret"));
-        assert!(!json.to_string().contains("n3w"));
-        assert!(!json.to_string().contains("password"));
+        let json = JsonValue::Array(listed.iter().map(|n| n.to_json_value()).collect());
+        let text = json.stringify(false);
+        assert!(!text.contains("s3cret"));
+        assert!(!text.contains("n3w"));
+        assert!(!text.contains("password"));
 
         assert!(known_ssids().unwrap().contains("HomeNet"));
         assert!(forget("HomeNet").unwrap());
@@ -445,9 +533,9 @@ mod tests {
         // available/enabled false and a null status instead of an error.
         if !Wifi::new().is_available() {
             let value = status().unwrap();
-            assert_eq!(value["available"], false);
-            assert_eq!(value["enabled"], false);
-            assert!(value["status"].is_null());
+            assert_eq!(value.get("available").and_then(|v| v.as_bool()), Some(false));
+            assert_eq!(value.get("enabled").and_then(|v| v.as_bool()), Some(false));
+            assert!(value.get("status").is_some_and(|v| v.is_null()));
         }
     }
 }

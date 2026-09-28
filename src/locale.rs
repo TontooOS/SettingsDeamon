@@ -9,8 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-
+use crate::json::JsonValue;
 use crate::store::SettingsStore;
 
 /// Store domain holding the keyboard auto-detect preference.
@@ -31,14 +30,23 @@ pub const LANGUAGES: &[(&str, &str)] = &[("en", "English"), ("de", "Deutsch")];
 pub const LANGUAGE_LOCALES: &[(&str, &str)] = &[("en", "en_US.UTF-8"), ("de", "de_DE.UTF-8")];
 
 /// Territory (ISO 3166-1 alpha-2) with English country name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionEntry {
     pub code: String,
     pub name: String,
 }
 
+impl RegionEntry {
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("code".to_string(), JsonValue::Str(self.code.clone())),
+            ("name".to_string(), JsonValue::Str(self.name.clone())),
+        ])
+    }
+}
+
 /// Effective language & region state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocaleState {
     pub language: String,
     pub region: String,
@@ -50,11 +58,57 @@ pub struct LocaleState {
     pub keymaps: Vec<String>,
 }
 
+impl LocaleState {
+    /// JSON shape for `locale_get` / `locale_set_*` replies.
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("language".to_string(), JsonValue::Str(self.language.clone())),
+            ("region".to_string(), JsonValue::Str(self.region.clone())),
+            ("keymap".to_string(), JsonValue::Str(self.keymap.clone())),
+            (
+                "keymap_variant".to_string(),
+                match &self.keymap_variant {
+                    Some(variant) => JsonValue::Str(variant.clone()),
+                    None => JsonValue::Null,
+                },
+            ),
+            ("auto_keymap".to_string(), JsonValue::Bool(self.auto_keymap)),
+            (
+                "languages".to_string(),
+                JsonValue::Array(
+                    self.languages.iter().map(|l| l.to_json_value()).collect(),
+                ),
+            ),
+            (
+                "regions".to_string(),
+                JsonValue::Array(
+                    self.regions.iter().map(|r| r.to_json_value()).collect(),
+                ),
+            ),
+            (
+                "keymaps".to_string(),
+                JsonValue::Array(
+                    self.keymaps.iter().map(|k| JsonValue::Str(k.clone())).collect(),
+                ),
+            ),
+        ])
+    }
+}
+
 /// Language option with display name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageEntry {
     pub code: String,
     pub name: String,
+}
+
+impl LanguageEntry {
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("code".to_string(), JsonValue::Str(self.code.clone())),
+            ("name".to_string(), JsonValue::Str(self.name.clone())),
+        ])
+    }
 }
 
 /// Parse `localectl status` output into `key -> value` pairs. The
@@ -333,7 +387,7 @@ pub fn set_keymap(
     let mut guard = store
         .lock()
         .map_err(|_| "locale set failed: store is locked".to_string())?;
-    guard.set(DOMAIN, KEY_AUTO_KEYMAP, serde_json::json!(false));
+    guard.set(DOMAIN, KEY_AUTO_KEYMAP, JsonValue::Bool(false));
     let effective = get(&guard);
     guard
         .save()
@@ -352,7 +406,7 @@ pub fn set_auto_keymap(store: &Arc<Mutex<SettingsStore>>, auto: bool) -> Result<
     let mut guard = store
         .lock()
         .map_err(|_| "locale set failed: store is locked".to_string())?;
-    guard.set(DOMAIN, KEY_AUTO_KEYMAP, serde_json::json!(auto));
+    guard.set(DOMAIN, KEY_AUTO_KEYMAP, JsonValue::Bool(auto));
     let effective = get(&guard);
     guard
         .save()

@@ -12,8 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-
+use crate::json::JsonValue;
 use crate::store::SettingsStore;
 
 /// Store domain holding the customization keys.
@@ -62,8 +61,7 @@ pub const THEMES: &[&str] = &["dark", "light"];
 pub const GLASS_AMOUNTS: &[&str] = &["much", "glass", "less"];
 
 /// Color theme with typed dark/light handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
   Dark,
   Light,
@@ -88,8 +86,7 @@ impl ThemeMode {
 
 /// Accent color with typed handling. `Multicolor` is the default element
 /// and renders as blue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccentColor {
   Multicolor,
   Blue,
@@ -146,8 +143,7 @@ impl AccentColor {
 }
 
 /// Liquid glass amount with typed handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlassAmount {
   Much,
   Glass,
@@ -174,13 +170,26 @@ impl GlassAmount {
 }
 
 /// Effective customization: stored values overlaid on the defaults.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomizeSettings {
   pub wallpaper: String,
   pub accent: String,
   pub theme: String,
   pub glass: String,
   pub revision: u64,
+}
+
+impl CustomizeSettings {
+  /// JSON shape for `customize_get` / `customize_set` replies.
+  pub fn to_json_value(&self) -> JsonValue {
+    JsonValue::Object(vec![
+      ("wallpaper".to_string(), JsonValue::Str(self.wallpaper.clone())),
+      ("accent".to_string(), JsonValue::Str(self.accent.clone())),
+      ("theme".to_string(), JsonValue::Str(self.theme.clone())),
+      ("glass".to_string(), JsonValue::Str(self.glass.clone())),
+      ("revision".to_string(), JsonValue::Integer(self.revision as i64)),
+    ])
+  }
 }
 
 impl Default for CustomizeSettings {
@@ -287,22 +296,22 @@ pub fn set(
     .lock()
     .map_err(|_| "customize set failed: store is locked".to_string())?;
   if let Some(value) = wallpaper {
-    guard.set(DOMAIN, KEY_WALLPAPER, serde_json::json!(value));
+    guard.set(DOMAIN, KEY_WALLPAPER, JsonValue::Str(value.to_string()));
   }
   if let Some(value) = accent {
-    guard.set(DOMAIN, KEY_ACCENT, serde_json::json!(value));
+    guard.set(DOMAIN, KEY_ACCENT, JsonValue::Str(value.to_string()));
   }
   if let Some(value) = theme {
-    guard.set(DOMAIN, KEY_THEME, serde_json::json!(value));
+    guard.set(DOMAIN, KEY_THEME, JsonValue::Str(value.to_string()));
   }
   if let Some(value) = glass {
-    guard.set(DOMAIN, KEY_GLASS, serde_json::json!(value));
+    guard.set(DOMAIN, KEY_GLASS, JsonValue::Str(value.to_string()));
   }
   let revision = get(&guard)
     .revision
     .checked_add(1)
     .unwrap_or(u64::MAX);
-  guard.set(DOMAIN, KEY_REVISION, serde_json::json!(revision));
+  guard.set(DOMAIN, KEY_REVISION, JsonValue::Integer(revision as i64));
   let effective = get(&guard);
   guard
     .save()
@@ -313,7 +322,6 @@ pub fn set(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use serde_json::json;
   use std::path::PathBuf;
 
   fn memory_store() -> Arc<Mutex<SettingsStore>> {
@@ -334,9 +342,9 @@ mod tests {
     let store = memory_store();
     {
       let mut guard = store.lock().unwrap();
-      guard.set(DOMAIN, KEY_ACCENT, json!("neon"));
-      guard.set(DOMAIN, KEY_THEME, json!("sepia"));
-      guard.set(DOMAIN, KEY_WALLPAPER, json!(""));
+      guard.set(DOMAIN, KEY_ACCENT, JsonValue::Str("neon".to_string()));
+      guard.set(DOMAIN, KEY_THEME, JsonValue::Str("sepia".to_string()));
+      guard.set(DOMAIN, KEY_WALLPAPER, JsonValue::Str(String::new()));
       assert_eq!(get(&guard), CustomizeSettings::default());
     }
   }
@@ -346,9 +354,9 @@ mod tests {
     let store = memory_store();
     {
       let mut guard = store.lock().unwrap();
-      guard.set(DOMAIN, KEY_WALLPAPER, json!("SONOMA"));
-      guard.set(DOMAIN, KEY_ACCENT, json!("blue"));
-      guard.set(DOMAIN, KEY_THEME, json!("light"));
+      guard.set(DOMAIN, KEY_WALLPAPER, JsonValue::Str("SONOMA".to_string()));
+      guard.set(DOMAIN, KEY_ACCENT, JsonValue::Str("blue".to_string()));
+      guard.set(DOMAIN, KEY_THEME, JsonValue::Str("light".to_string()));
     }
     let guard = store.lock().unwrap();
     assert_eq!(

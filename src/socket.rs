@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::config::DaemonConfig;
+use crate::json::JsonValue;
 use crate::library::LibraryManager;
 use crate::store::SettingsStore;
 
@@ -138,7 +139,7 @@ fn serve_connection(
       Err(_) => break,
     }
     let frame = handle_line(&line, &sys, &os, &store);
-    let mut out = frame.to_string();
+    let mut out = frame.stringify(false);
     out.push('\n');
     if writer.write_all(out.as_bytes()).is_err() || writer.flush().is_err() {
       break;
@@ -153,27 +154,30 @@ fn handle_line(
   sys: &Path,
   os: &Path,
   store: &Arc<Mutex<SettingsStore>>,
-) -> serde_json::Value {
-  let request: serde_json::Value = match serde_json::from_str(line) {
+) -> JsonValue {
+  let request = match JsonValue::parse(line) {
     Ok(value) => value,
     Err(e) => return error_frame(0, format!("invalid request: {}", e)),
   };
-  let id = request.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-  let op = request.get("op").and_then(|v| v.as_str()).unwrap_or("");
-  let params = request.get("params").cloned().unwrap_or(serde_json::Value::Null);
-  dispatch(id, op, &params, sys, os, store)
+  let id = crate::json::frame_id(&request);
+  let op = crate::json::frame_op(&request);
+  let params = crate::json::frame_params(&request);
+  dispatch(id, &op, &params, sys, os, store)
 }
 
 fn dispatch(
   id: u64,
   op: &str,
-  params: &serde_json::Value,
+  params: &JsonValue,
   sys: &Path,
   os: &Path,
   store: &Arc<Mutex<SettingsStore>>,
-) -> serde_json::Value {
+) -> JsonValue {
   match op {
-    OP_PING => success_frame(id, serde_json::json!({"pong": true})),
+    OP_PING => success_frame(
+      id,
+      JsonValue::Object(vec![("pong".to_string(), JsonValue::Bool(true))]),
+    ),
     OP_GET_HARDWARE => match read_fico_json(sys) {
       Ok(json) => success_frame(id, json),
       Err(e) => error_frame(id, format!("sys.fico unavailable: {}", e)),
@@ -183,7 +187,13 @@ fn dispatch(
       Err(e) => error_frame(id, format!("os.fico unavailable: {}", e)),
     },
     crate::wifi::OP_WIFI_LIST => match crate::wifi::list() {
-      Ok(networks) => success_frame(id, serde_json::json!({"networks": networks})),
+      Ok(networks) => success_frame(
+        id,
+        JsonValue::Object(vec![(
+          "networks".to_string(),
+          JsonValue::Array(networks.iter().map(crate::wifi::network_to_json).collect()),
+        )]),
+      ),
       Err(e) => error_frame(id, format!("wifi scan failed: {}", e)),
     },
     crate::wifi::OP_WIFI_STATUS => match crate::wifi::status() {
@@ -191,7 +201,13 @@ fn dispatch(
       Err(e) => error_frame(id, format!("wifi status failed: {}", e)),
     },
     crate::wifi::OP_WIFI_KNOWN_LIST => match crate::wifi::known_list() {
-      Ok(known) => success_frame(id, serde_json::json!({"networks": known})),
+      Ok(known) => success_frame(
+        id,
+        JsonValue::Object(vec![(
+          "networks".to_string(),
+          JsonValue::Array(known.iter().map(|n| n.to_json_value()).collect()),
+        )]),
+      ),
       Err(e) => error_frame(id, format!("wifi known list failed: {}", e)),
     },
     crate::wifi::OP_WIFI_CONNECT => {
@@ -199,106 +215,95 @@ fn dispatch(
       let password = params.get("password").and_then(|v| v.as_str());
       let hidden = params.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::wifi::connect(ssid, password, hidden) {
-        Ok(status) => success_frame(
-          id,
-          serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(status) => success_frame(id, crate::wifi::status_to_json(&status)),
         Err(e) => error_frame(id, format!("wifi connect failed: {}", e)),
       }
     }
     crate::wifi::OP_WIFI_DISCONNECT => match crate::wifi::disconnect() {
-      Ok(()) => success_frame(id, serde_json::json!({"disconnected": true})),
+      Ok(()) => success_frame(
+        id,
+        JsonValue::Object(vec![("disconnected".to_string(), JsonValue::Bool(true))]),
+      ),
       Err(e) => error_frame(id, format!("wifi disconnect failed: {}", e)),
     },
     crate::wifi::OP_WIFI_ENABLE => match crate::wifi::set_enabled(true) {
-      Ok(()) => success_frame(id, serde_json::json!({"enabled": true})),
+      Ok(()) => success_frame(
+        id,
+        JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(true))]),
+      ),
       Err(e) => error_frame(id, format!("wifi enable failed: {}", e)),
     },
     crate::wifi::OP_WIFI_DISABLE => match crate::wifi::set_enabled(false) {
-      Ok(()) => success_frame(id, serde_json::json!({"enabled": false})),
+      Ok(()) => success_frame(
+        id,
+        JsonValue::Object(vec![("enabled".to_string(), JsonValue::Bool(false))]),
+      ),
       Err(e) => error_frame(id, format!("wifi disable failed: {}", e)),
     },
     crate::wifi::OP_WIFI_FORGET => {
       let ssid = params.get("ssid").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wifi::forget(ssid) {
-        Ok(removed) => success_frame(id, serde_json::json!({"forgotten": removed})),
+        Ok(removed) => success_frame(
+          id,
+          JsonValue::Object(vec![("forgotten".to_string(), JsonValue::Bool(removed))]),
+        ),
         Err(e) => error_frame(id, format!("wifi forget failed: {}", e)),
       }
     }
     crate::dns::OP_DNS_GET => match crate::dns::get() {
-      Ok(state) => success_frame(
-        id,
-        serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-      ),
+      Ok(state) => success_frame(id, state.to_json_value()),
       Err(e) => error_frame(id, format!("dns get failed: {}", e)),
     },
     crate::dns::OP_DNS_SET => {
       let servers = params.get("servers").and_then(|v| v.as_str()).unwrap_or("");
       match crate::dns::set_from_str(servers) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, format!("dns set failed: {}", e)),
       }
     }
     crate::wired::OP_WIRED_LIST => match crate::wired::list() {
-      Ok(interfaces) => success_frame(id, serde_json::json!({"interfaces": interfaces})),
-      Err(e) => error_frame(id, format!("wired list failed: {}", e)),
-    }
-    crate::datetime::OP_DATETIME_GET => match store.lock() {
-      Ok(guard) => success_frame(
+      Ok(interfaces) => success_frame(
         id,
-        serde_json::to_value(crate::datetime::get(&guard))
-          .unwrap_or(serde_json::Value::Null),
+        JsonValue::Object(vec![(
+          "interfaces".to_string(),
+          JsonValue::Array(interfaces.iter().map(|i| i.to_json_value()).collect()),
+        )]),
       ),
+      Err(e) => error_frame(id, format!("wired list failed: {}", e)),
+    },
+    crate::datetime::OP_DATETIME_GET => match store.lock() {
+      Ok(guard) => success_frame(id, crate::datetime::get(&guard).to_json_value()),
       Err(_) => error_frame(id, "datetime get failed: store is locked".to_string()),
     },
     crate::datetime::OP_DATETIME_SET_TIMEZONE => {
       let timezone = params.get("timezone").and_then(|v| v.as_str()).unwrap_or("");
       match crate::datetime::set_timezone(store, timezone) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::datetime::OP_DATETIME_SET_24H => {
       let use_24h = params.get("use_24h").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::datetime::set_24h(store, use_24h) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::locale::OP_LOCALE_GET => match store.lock() {
-      Ok(guard) => success_frame(
-        id,
-        serde_json::to_value(crate::locale::get(&guard))
-          .unwrap_or(serde_json::Value::Null),
-      ),
+      Ok(guard) => success_frame(id, crate::locale::get(&guard).to_json_value()),
       Err(_) => error_frame(id, "locale get failed: store is locked".to_string()),
     },
     crate::locale::OP_LOCALE_SET_LANGUAGE => {
       let language = params.get("language").and_then(|v| v.as_str()).unwrap_or("");
       match crate::locale::set_language(store, language) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::locale::OP_LOCALE_SET_REGION => {
       let region = params.get("region").and_then(|v| v.as_str()).unwrap_or("");
       match crate::locale::set_region(store, region) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
@@ -306,20 +311,14 @@ fn dispatch(
       let layout = params.get("layout").and_then(|v| v.as_str()).unwrap_or("");
       let variant = params.get("variant").and_then(|v| v.as_str());
       match crate::locale::set_keymap(store, layout, variant) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::locale::OP_LOCALE_SET_AUTO_KEYMAP => {
       let auto = params.get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
       match crate::locale::set_auto_keymap(store, auto) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
@@ -327,15 +326,19 @@ fn dispatch(
       let layout = params.get("layout").and_then(|v| v.as_str()).unwrap_or("");
       success_frame(
         id,
-        serde_json::json!({"variants": crate::locale::keymap_variants(layout)}),
+        JsonValue::Object(vec![(
+          "variants".to_string(),
+          JsonValue::Array(
+            crate::locale::keymap_variants(layout)
+              .iter()
+              .map(|v| JsonValue::Str(v.clone()))
+              .collect(),
+          ),
+        )]),
       )
     }
     crate::customize::OP_CUSTOMIZE_GET => match store.lock() {
-      Ok(guard) => success_frame(
-        id,
-        serde_json::to_value(crate::customize::get(&guard))
-          .unwrap_or(serde_json::Value::Null),
-      ),
+      Ok(guard) => success_frame(id, crate::customize::get(&guard).to_json_value()),
       Err(_) => error_frame(id, "customize get failed: store is locked".to_string()),
     },
     crate::customize::OP_CUSTOMIZE_SET => {
@@ -344,19 +347,12 @@ fn dispatch(
       let theme = params.get("theme").and_then(|v| v.as_str());
       let glass = params.get("glass").and_then(|v| v.as_str());
       match crate::customize::set(store, wallpaper, accent, theme, glass) {
-        Ok(settings) => success_frame(
-          id,
-          serde_json::to_value(settings).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(settings) => success_frame(id, settings.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::wallpaper::OP_WALLPAPER_GET => match store.lock() {
-      Ok(guard) => success_frame(
-        id,
-        serde_json::to_value(crate::wallpaper::state(&guard))
-          .unwrap_or(serde_json::Value::Null),
-      ),
+      Ok(guard) => success_frame(id, crate::wallpaper::state(&guard).to_json_value()),
       Err(_) => error_frame(id, "wallpaper get failed: store is locked".to_string()),
     },
     crate::wallpaper::OP_WALLPAPER_SET_CURRENT => {
@@ -365,7 +361,10 @@ fn dispatch(
       match crate::wallpaper::set_current(store, kind, entry_id) {
         Ok(entry) => success_frame(
           id,
-          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
+          match entry {
+            Some(entry) => entry.to_json_value(),
+            None => JsonValue::Null,
+          },
         ),
         Err(e) => error_frame(id, e),
       }
@@ -373,7 +372,10 @@ fn dispatch(
     crate::wallpaper::OP_WALLPAPER_SET_FILL => {
       let fill = params.get("fill").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::set_fill(store, fill) {
-        Ok(applied) => success_frame(id, serde_json::json!({"fill": applied})),
+        Ok(applied) => success_frame(
+          id,
+          JsonValue::Object(vec![("fill".to_string(), JsonValue::Str(applied))]),
+        ),
         Err(e) => error_frame(id, e),
       }
     }
@@ -381,10 +383,7 @@ fn dispatch(
       let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
       let name = params.get("name").and_then(|v| v.as_str());
       match crate::wallpaper::add(Path::new(path), name) {
-        Ok(entry) => success_frame(
-          id,
-          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(entry) => success_frame(id, entry.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
@@ -393,17 +392,20 @@ fn dispatch(
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       let variant = params.get("variant").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::apply(store, kind, entry_id, variant) {
-        Ok(entry) => success_frame(
-          id,
-          serde_json::to_value(entry).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(entry) => success_frame(id, entry.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
     crate::wallpaper::OP_WALLPAPER_DELETE => {
       let entry_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
       match crate::wallpaper::delete(store, entry_id) {
-        Ok(switched) => success_frame(id, serde_json::json!({"deleted": true, "switched": switched})),
+        Ok(switched) => success_frame(
+          id,
+          JsonValue::Object(vec![
+            ("deleted".to_string(), JsonValue::Bool(true)),
+            ("switched".to_string(), JsonValue::Bool(switched)),
+          ]),
+        ),
         Err(e) => error_frame(id, e),
       }
     }
@@ -412,10 +414,7 @@ fn dispatch(
       .map_err(|_| "display get failed: store is locked".to_string())
       .and_then(|guard| crate::display::get(&guard))
     {
-      Ok(state) => success_frame(
-        id,
-        serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-      ),
+      Ok(state) => success_frame(id, state.to_json_value()),
       Err(e) => error_frame(id, e),
     },
     crate::display::OP_DISPLAY_SET => {
@@ -426,10 +425,7 @@ fn dispatch(
       let brightness = params.get("brightness").and_then(|v| v.as_f64());
       let night_light = params.get("night_light").and_then(|v| v.as_bool());
       match crate::display::set(store, output, width, height, refresh, brightness, night_light) {
-        Ok(state) => success_frame(
-          id,
-          serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
-        ),
+        Ok(state) => success_frame(id, state.to_json_value()),
         Err(e) => error_frame(id, e),
       }
     }
@@ -438,17 +434,17 @@ fn dispatch(
 }
 
 /// Read a `.fico` file from disk and return its content as JSON.
-fn read_fico_json(path: &Path) -> Result<serde_json::Value, String> {
+fn read_fico_json(path: &Path) -> Result<JsonValue, String> {
   let doc = sdk::FishFile::FishDocument::from_file(path).map_err(|e| e.to_string())?;
-  Ok(doc.to_json_value())
+  JsonValue::parse(&doc.to_json()).map_err(|e| e.to_string())
 }
 
-fn success_frame(id: u64, result: serde_json::Value) -> serde_json::Value {
-  serde_json::json!({"id": id, "ok": true, "result": result})
+fn success_frame(id: u64, result: JsonValue) -> JsonValue {
+  crate::json::success_frame(id, result)
 }
 
-fn error_frame(id: u64, error: String) -> serde_json::Value {
-  serde_json::json!({"id": id, "ok": false, "error": error})
+fn error_frame(id: u64, error: String) -> JsonValue {
+  crate::json::error_frame(id, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -458,10 +454,42 @@ fn error_frame(id: u64, error: String) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::path::PathBuf;
+  use crate::json::JsonValue;
 
-  fn no_params() -> serde_json::Value {
-    serde_json::Value::Null
+  fn no_params() -> JsonValue {
+    JsonValue::Null
+  }
+
+  fn params(entries: Vec<(String, JsonValue)>) -> JsonValue {
+    JsonValue::Object(entries)
+  }
+
+  fn str_param(key: &str, value: &str) -> (String, JsonValue) {
+    (key.to_string(), JsonValue::Str(value.to_string()))
+  }
+
+  fn bool_param(key: &str, value: bool) -> (String, JsonValue) {
+    (key.to_string(), JsonValue::Bool(value))
+  }
+
+  fn num_param(key: &str, value: i64) -> (String, JsonValue) {
+    (key.to_string(), JsonValue::Integer(value))
+  }
+
+  fn float_param(key: &str, value: f64) -> (String, JsonValue) {
+    (key.to_string(), JsonValue::Float(value))
+  }
+
+  fn ok_of(frame: &JsonValue) -> Option<bool> {
+    frame.get("ok")?.as_bool()
+  }
+
+  fn result_of<'a>(frame: &'a JsonValue) -> Option<&'a JsonValue> {
+    frame.get("result")
+  }
+
+  fn error_text(frame: &JsonValue) -> String {
+    frame.get("error").and_then(|v| v.as_str()).unwrap_or("").to_string()
   }
 
   fn temp_case(name: &str) -> PathBuf {
@@ -481,33 +509,33 @@ mod tests {
   fn ping_frame() {
     let store = memory_store();
     let frame = dispatch(7, OP_PING, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
-    assert_eq!(frame["id"], 7);
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["pong"], true);
+    assert_eq!(frame.get("id").and_then(|v| v.as_i64()), Some(7));
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(result_of(&frame).and_then(|r| r.get("pong")).and_then(|v| v.as_bool()), Some(true));
   }
 
   #[test]
   fn unknown_op_frame() {
     let store = memory_store();
     let frame = dispatch(3, "delete_everything", &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown op"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown op"));
   }
 
   #[test]
   fn invalid_line_frame() {
     let store = memory_store();
     let frame = handle_line("not json\n", Path::new("/nonexistent"), Path::new("/nonexistent"), &store);
-    assert_eq!(frame["id"], 0);
-    assert_eq!(frame["ok"], false);
+    assert_eq!(frame.get("id").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(ok_of(&frame), Some(false));
   }
 
   #[test]
   fn missing_file_frame() {
     let store = memory_store();
     let frame = dispatch(1, OP_GET_OS, &no_params(), Path::new("/nonexistent"), Path::new("/nonexistent-sys.fico"), &store);
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("os.fico unavailable"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("os.fico unavailable"));
   }
 
   #[test]
@@ -516,13 +544,13 @@ mod tests {
     let frame = dispatch(
       4,
       crate::wifi::OP_WIFI_CONNECT,
-      &serde_json::json!({}),
+      &JsonValue::Object(vec![]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("wifi connect failed"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("wifi connect failed"));
   }
 
   #[test]
@@ -531,13 +559,13 @@ mod tests {
     let frame = dispatch(
       5,
       crate::wifi::OP_WIFI_FORGET,
-      &serde_json::json!({}),
+      &JsonValue::Object(vec![]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("wifi forget failed"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("wifi forget failed"));
   }
 
   #[test]
@@ -546,13 +574,13 @@ mod tests {
     let frame = dispatch(
       7,
       crate::dns::OP_DNS_SET,
-      &serde_json::json!({"servers": "not-an-ip"}),
+      &params(vec![str_param("servers", "not-an-ip")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("dns set failed"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("dns set failed"));
   }
 
   #[test]
@@ -566,10 +594,11 @@ mod tests {
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["wallpaper"], crate::customize::DEFAULT_WALLPAPER);
-    assert_eq!(frame["result"]["accent"], crate::customize::DEFAULT_ACCENT);
-    assert_eq!(frame["result"]["theme"], crate::customize::DEFAULT_THEME);
+    assert_eq!(ok_of(&frame), Some(true));
+    let result = result_of(&frame).unwrap();
+    assert_eq!(result.get("wallpaper").and_then(|v| v.as_str()), Some(crate::customize::DEFAULT_WALLPAPER));
+    assert_eq!(result.get("accent").and_then(|v| v.as_str()), Some(crate::customize::DEFAULT_ACCENT));
+    assert_eq!(result.get("theme").and_then(|v| v.as_str()), Some(crate::customize::DEFAULT_THEME));
   }
 
   #[test]
@@ -578,13 +607,17 @@ mod tests {
     let frame = dispatch(
       7,
       crate::customize::OP_CUSTOMIZE_SET,
-      &serde_json::json!({"wallpaper": "SONOMA", "accent": "blue", "theme": "light"}),
+      &params(vec![
+        str_param("wallpaper", "SONOMA"),
+        str_param("accent", "blue"),
+        str_param("theme", "light"),
+      ]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["wallpaper"], "SONOMA");
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(result_of(&frame).and_then(|r| r.get("wallpaper")).and_then(|v| v.as_str()), Some("SONOMA"));
 
     let frame = dispatch(
       8,
@@ -594,18 +627,18 @@ mod tests {
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["result"]["accent"], "blue");
+    assert_eq!(result_of(&frame).and_then(|r| r.get("accent")).and_then(|v| v.as_str()), Some("blue"));
 
     let frame = dispatch(
       9,
       crate::customize::OP_CUSTOMIZE_SET,
-      &serde_json::json!({"theme": "sepia"}),
+      &params(vec![str_param("theme", "sepia")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown theme"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown theme"));
     let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
   }
 
@@ -620,10 +653,11 @@ mod tests {
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], true);
-    assert!(frame["result"]["premade"].is_array());
-    assert!(frame["result"]["customs"].is_array());
-    assert_eq!(frame["result"]["fill"], crate::wallpaper::DEFAULT_FILL);
+    assert_eq!(ok_of(&frame), Some(true));
+    let result = result_of(&frame).unwrap();
+    assert!(result.get("premade").and_then(|v| v.as_array()).is_some());
+    assert!(result.get("customs").and_then(|v| v.as_array()).is_some());
+    assert_eq!(result.get("fill").and_then(|v| v.as_str()), Some(crate::wallpaper::DEFAULT_FILL));
   }
 
   #[test]
@@ -640,23 +674,23 @@ mod tests {
     let frame = dispatch(
       11,
       crate::wallpaper::OP_WALLPAPER_SET_FILL,
-      &serde_json::json!({"fill": "tile"}),
+      &params(vec![str_param("fill", "tile")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["fill"], "tile");
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(result_of(&frame).and_then(|r| r.get("fill")).and_then(|v| v.as_str()), Some("tile"));
     let frame = dispatch(
       12,
       crate::wallpaper::OP_WALLPAPER_SET_FILL,
-      &serde_json::json!({"fill": "melt"}),
+      &params(vec![str_param("fill", "melt")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown fill mode"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown fill mode"));
     let _ = std::fs::remove_file("/tmp/tontoo-settings-socket-test.json");
     std::env::remove_var("TONTOO_WALLPAPERS_DIR");
     std::env::remove_var("SETTINGS_WALLPAPER_DIR");
@@ -670,13 +704,13 @@ mod tests {
     let frame = dispatch(
       13,
       crate::wallpaper::OP_WALLPAPER_SET_CURRENT,
-      &serde_json::json!({"kind": "orb", "id": "FLOW"}),
+      &params(vec![str_param("kind", "orb"), str_param("id", "FLOW")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown kind"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown kind"));
   }
 
   #[test]
@@ -685,13 +719,13 @@ mod tests {
     let frame = dispatch(
       14,
       crate::wallpaper::OP_WALLPAPER_ADD,
-      &serde_json::json!({"path": "/nonexistent-wallpaper-test/missing.png"}),
+      &params(vec![str_param("path", "/nonexistent-wallpaper-test/missing.png")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("file not found"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("file not found"));
   }
 
   #[test]
@@ -700,13 +734,17 @@ mod tests {
     let frame = dispatch(
       15,
       crate::wallpaper::OP_WALLPAPER_APPLY,
-      &serde_json::json!({"kind": "premade", "id": "FLOW", "variant": "sepia"}),
+      &params(vec![
+        str_param("kind", "premade"),
+        str_param("id", "FLOW"),
+        str_param("variant", "sepia"),
+      ]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown variant"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown variant"));
   }
 
   #[test]
@@ -715,13 +753,13 @@ mod tests {
     let frame = dispatch(
       16,
       crate::wallpaper::OP_WALLPAPER_DELETE,
-      &serde_json::json!({"id": "ghost"}),
+      &params(vec![str_param("id", "ghost")]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unknown custom wallpaper"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unknown custom wallpaper"));
   }
 
   #[test]
@@ -730,13 +768,13 @@ mod tests {
     let frame = dispatch(
       17,
       crate::display::OP_DISPLAY_SET,
-      &serde_json::json!({"brightness": 120.0}),
+      &params(vec![float_param("brightness", 120.0)]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("invalid brightness"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("invalid brightness"));
   }
 
   #[test]
@@ -755,14 +793,14 @@ mod tests {
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], false);
-    assert!(frame["error"].as_str().unwrap().contains("unreachable"));
+    assert_eq!(ok_of(&frame), Some(false));
+    assert!(error_text(&frame).contains("unreachable"));
     std::env::remove_var("COMPOSITOR_SOCKET");
   }
 
   /// Mock compositor socket replying canned frames in order, one per
   /// connection.
-  fn mock_display(replies: Vec<serde_json::Value>) -> PathBuf {
+  fn mock_display(replies: Vec<JsonValue>) -> PathBuf {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -783,7 +821,7 @@ mod tests {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         let _ = reader.read_line(&mut line);
-        let mut out = reply.to_string();
+        let mut out = reply.stringify(false);
         out.push('\n');
         let _ = stream.write_all(out.as_bytes());
       }
@@ -791,34 +829,49 @@ mod tests {
     path
   }
 
+  fn compositor_ok_frame(entries: Vec<(String, JsonValue)>) -> JsonValue {
+    JsonValue::Object(vec![
+      ("ok".to_string(), JsonValue::Bool(true)),
+      ("result".to_string(), JsonValue::Object(entries)),
+    ])
+  }
+
   #[test]
   fn display_set_roundtrip_persists() {
     let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
     let sock = mock_display(vec![
-      serde_json::json!({"ok": true, "result": {
-        "output": "HDMI-1",
-        "mode": {"width": 1920, "height": 1080, "refresh": 120},
-        "brightness": 80,
-        "night_light": true,
-      }}),
-      serde_json::json!({"ok": true, "result": {"outputs": []}}),
+      compositor_ok_frame(vec![
+        ("output".to_string(), JsonValue::Str("HDMI-1".to_string())),
+        (
+          "mode".to_string(),
+          JsonValue::Object(vec![
+            ("width".to_string(), JsonValue::Integer(1920)),
+            ("height".to_string(), JsonValue::Integer(1080)),
+            ("refresh".to_string(), JsonValue::Integer(120)),
+          ]),
+        ),
+        ("brightness".to_string(), JsonValue::Integer(80)),
+        ("night_light".to_string(), JsonValue::Bool(true)),
+      ]),
+      compositor_ok_frame(vec![("outputs".to_string(), JsonValue::Array(vec![]))]),
     ]);
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     let store = memory_store();
     let frame = dispatch(
       19,
       crate::display::OP_DISPLAY_SET,
-      &serde_json::json!({"brightness": 80.0, "night_light": true}),
+      &params(vec![float_param("brightness", 80.0), bool_param("night_light", true)]),
       Path::new("/nonexistent"),
       Path::new("/nonexistent"),
       &store,
     );
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["brightness"], 80);
-    assert_eq!(frame["result"]["night_light"], true);
+    assert_eq!(ok_of(&frame), Some(true));
+    let result = result_of(&frame).unwrap();
+    assert_eq!(result.get("brightness").and_then(|v| v.as_i64()), Some(80));
+    assert_eq!(result.get("night_light").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
-      frame["result"]["outputs"],
-      serde_json::json!([])
+      result.get("outputs"),
+      Some(&JsonValue::Array(vec![]))
     );
     std::env::remove_var("COMPOSITOR_SOCKET");
     let _ = std::fs::remove_file(&sock);
@@ -853,16 +906,22 @@ mod tests {
     writer.write_all(b"{\"id\": 1, \"op\": \"get_os\"}\n").unwrap();
     writer.flush().unwrap();
     reader.read_line(&mut line).unwrap();
-    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(frame["ok"], true);
-    assert_eq!(frame["result"]["os"]["version"], "26.1.0");
+    let frame = JsonValue::parse(&line).unwrap();
+    assert_eq!(ok_of(&frame), Some(true));
+    assert_eq!(
+      frame.get("result").and_then(|r| r.get("os")).and_then(|o| o.get("version")).and_then(|v| v.as_str()),
+      Some("26.1.0")
+    );
 
     line.clear();
     writer.write_all(b"{\"id\": 2, \"op\": \"get_hardware\"}\n").unwrap();
     writer.flush().unwrap();
     reader.read_line(&mut line).unwrap();
-    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(frame["result"]["ram"]["total_gb"], 32.0);
+    let frame = JsonValue::parse(&line).unwrap();
+    assert_eq!(
+      frame.get("result").and_then(|r| r.get("ram")).and_then(|o| o.get("total_gb")).and_then(|v| v.as_f64()),
+      Some(32.0)
+    );
 
     let _ = std::fs::remove_file(&os_path);
     let _ = std::fs::remove_file(&sys_path);

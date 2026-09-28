@@ -20,8 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-
+use crate::json::JsonValue;
 use crate::store::SettingsStore;
 
 /// System directory holding one premade pack per subdirectory.
@@ -94,23 +93,59 @@ pub fn premade_rank(id: &str) -> usize {
 /// One listed wallpaper: a premade pack or a user custom file.
 /// `path` is the light (default) image, `path_dark` the dark variant
 /// (same file when the pack ships only one image).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WallpaperEntry {
   pub kind: String,
   pub id: String,
   pub name: String,
   pub path: String,
-  #[serde(default)]
   pub path_dark: String,
 }
 
+impl WallpaperEntry {
+  /// JSON shape for wallpaper replies.
+  pub fn to_json_value(&self) -> JsonValue {
+    JsonValue::Object(vec![
+      ("kind".to_string(), JsonValue::Str(self.kind.clone())),
+      ("id".to_string(), JsonValue::Str(self.id.clone())),
+      ("name".to_string(), JsonValue::Str(self.name.clone())),
+      ("path".to_string(), JsonValue::Str(self.path.clone())),
+      ("path_dark".to_string(), JsonValue::Str(self.path_dark.clone())),
+    ])
+  }
+}
+
 /// Full wallpaper state behind `wallpaper_get`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WallpaperState {
   pub current: Option<WallpaperEntry>,
   pub fill: String,
   pub customs: Vec<WallpaperEntry>,
   pub premade: Vec<WallpaperEntry>,
+}
+
+impl WallpaperState {
+  /// JSON shape for `wallpaper_get` replies.
+  pub fn to_json_value(&self) -> JsonValue {
+    JsonValue::Object(vec![
+      (
+        "current".to_string(),
+        match &self.current {
+          Some(entry) => entry.to_json_value(),
+          None => JsonValue::Null,
+        },
+      ),
+      ("fill".to_string(), JsonValue::Str(self.fill.clone())),
+      (
+        "customs".to_string(),
+        JsonValue::Array(self.customs.iter().map(|e| e.to_json_value()).collect()),
+      ),
+      (
+        "premade".to_string(),
+        JsonValue::Array(self.premade.iter().map(|e| e.to_json_value()).collect()),
+      ),
+    ])
+  }
 }
 
 /// Premade packs directory (`TONTOO_WALLPAPERS_DIR` override).
@@ -295,8 +330,8 @@ pub fn read_storage_names(fico: &Path) -> HashMap<String, String> {
     Ok(doc) => doc,
     Err(_) => return names,
   };
-  let json = doc.to_json_value();
-  if let Some(sections) = json.as_object() {
+  let json = JsonValue::parse(&doc.to_json()).unwrap_or(JsonValue::Null);
+  if let Some(sections) = json.object_entries() {
     for (_, section) in sections {
       let id = section.get("id").and_then(|v| v.as_str());
       let name = section.get("name").and_then(|v| v.as_str());
@@ -667,8 +702,8 @@ pub fn set_current(
     .find(|e| e.id == id)
     .cloned()
     .ok_or_else(|| format!("wallpaper set failed: unknown wallpaper {:?}", id))?;
-  guard.set(DOMAIN, KEY_CURRENT_KIND, serde_json::json!(kind));
-  guard.set(DOMAIN, KEY_CURRENT_ID, serde_json::json!(id));
+  guard.set(DOMAIN, KEY_CURRENT_KIND, JsonValue::Str(kind.to_string()));
+  guard.set(DOMAIN, KEY_CURRENT_ID, JsonValue::Str(id.to_string()));
   guard
     .save()
     .map_err(|e| format!("wallpaper set failed: store save failed: {}", e))?;
@@ -700,7 +735,7 @@ pub fn set_fill(store: &Arc<Mutex<SettingsStore>>, fill: &str) -> Result<String,
   let mut guard = store
     .lock()
     .map_err(|_| "wallpaper set failed: store is locked".to_string())?;
-  guard.set(DOMAIN, KEY_FILL, serde_json::json!(fill));
+  guard.set(DOMAIN, KEY_FILL, JsonValue::Str(fill.to_string()));
   guard
     .save()
     .map_err(|e| format!("wallpaper set failed: store save failed: {}", e))?;
@@ -747,7 +782,12 @@ pub(crate) fn send_to_compositor(file: &Path, fill: &str) -> Result<(), String> 
   })?;
   let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
   let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-  let mut line = serde_json::json!({"op": "set_wallpaper", "path": file.to_string_lossy(), "fill": fill}).to_string();
+  let mut line = JsonValue::Object(vec![
+    ("op".to_string(), JsonValue::Str("set_wallpaper".to_string())),
+    ("path".to_string(), JsonValue::Str(file.to_string_lossy().to_string())),
+    ("fill".to_string(), JsonValue::Str(fill.to_string())),
+  ])
+  .stringify(false);
   line.push('\n');
   stream
     .write_all(line.as_bytes())
@@ -760,7 +800,7 @@ pub(crate) fn send_to_compositor(file: &Path, fill: &str) -> Result<(), String> 
   reader
     .read_line(&mut reply)
     .map_err(|e| format!("wallpaper apply failed: compositor read failed: {}", e))?;
-  let frame: serde_json::Value = serde_json::from_str(&reply)
+  let frame = JsonValue::parse(&reply)
     .map_err(|e| format!("wallpaper apply failed: compositor reply invalid: {}", e))?;
   if frame.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
     Ok(())
@@ -863,7 +903,6 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use serde_json::json;
   use std::path::PathBuf;
 
   fn temp_case(name: &str) -> PathBuf {
@@ -886,6 +925,16 @@ mod tests {
 
   fn memory_store(path: &Path) -> Arc<Mutex<SettingsStore>> {
     Arc::new(Mutex::new(SettingsStore::new(path.to_path_buf())))
+  }
+
+  fn ok_frame() -> JsonValue {
+    JsonValue::Object(vec![
+      ("ok".to_string(), JsonValue::Bool(true)),
+      (
+        "result".to_string(),
+        JsonValue::Object(vec![("fading".to_string(), JsonValue::Bool(true))]),
+      ),
+    ])
   }
 
   #[test]
@@ -1045,7 +1094,7 @@ mod tests {
     assert_eq!(fill_in(&store.lock().unwrap()), DEFAULT_FILL);
 
     // Compositor up: applied live and persisted.
-    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    let sock = mock_compositor(ok_frame());
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     assert_eq!(set_fill(&store, "tile").unwrap(), "tile");
     assert_eq!(fill_in(&store.lock().unwrap()), "tile");
@@ -1075,7 +1124,7 @@ mod tests {
     let store = memory_store(&dir.join("settings.json"));
     {
       let mut guard = store.lock().unwrap();
-      guard.set(DOMAIN, KEY_FILL, serde_json::json!("center"));
+      guard.set(DOMAIN, KEY_FILL, JsonValue::Str("center".to_string()));
       guard.save().unwrap();
     }
 
@@ -1100,10 +1149,10 @@ mod tests {
     std::env::set_var("COMPOSITOR_SOCKET", &path);
     apply(&store, "premade", "FLOW", "light").unwrap();
     let line = captured.lock().unwrap().clone();
-    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(frame["op"], "set_wallpaper");
-    assert_eq!(frame["fill"], "center");
-    assert!(frame["path"].as_str().unwrap().ends_with("a.png"));
+    let frame = JsonValue::parse(&line).unwrap();
+    assert_eq!(frame.get("op").and_then(|v| v.as_str()), Some("set_wallpaper"));
+    assert_eq!(frame.get("fill").and_then(|v| v.as_str()), Some("center"));
+    assert!(frame.get("path").and_then(|v| v.as_str()).unwrap().ends_with("a.png"));
 
     std::env::remove_var("TONTOO_WALLPAPERS_DIR");
     std::env::remove_var("SETTINGS_WALLPAPER_DIR");
@@ -1217,7 +1266,7 @@ mod tests {
     assert!(push_current_to_compositor(&store).is_err());
 
     // Mock compositor: default pushes Tahoe Lake.
-    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    let sock = mock_compositor(ok_frame());
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     let pushed = push_current_to_compositor(&store).unwrap().unwrap();
     assert_eq!(pushed.id, "THAOELAKE");
@@ -1261,7 +1310,7 @@ mod tests {
 
   /// Mock compositor socket: accept one connection, read the request line,
   /// reply with one frame. Returns the socket path (unique per call).
-  fn mock_compositor(reply: serde_json::Value) -> PathBuf {
+  fn mock_compositor(reply: JsonValue) -> PathBuf {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1279,7 +1328,7 @@ mod tests {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         let _ = reader.read_line(&mut line);
-        let mut out = reply.to_string();
+        let mut out = reply.stringify(false);
         out.push('\n');
         let _ = stream.write_all(out.as_bytes());
       }
@@ -1312,7 +1361,7 @@ mod tests {
     std::env::set_var("TONTOO_WALLPAPERS_DIR", &premade);
     let customs = temp_case("apply-custom");
     std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
-    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    let sock = mock_compositor(ok_frame());
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     let dir = temp_case("apply-store");
     let store = memory_store(&dir.join("settings.json"));
@@ -1424,7 +1473,7 @@ mod tests {
     let customs = temp_case("delete-current-custom");
     std::env::set_var("SETTINGS_WALLPAPER_DIR", &customs);
     let file = write_custom_png(&customs, "mine.png");
-    let sock = mock_compositor(serde_json::json!({"ok": true, "result": {"fading": true}}));
+    let sock = mock_compositor(ok_frame());
     std::env::set_var("COMPOSITOR_SOCKET", &sock);
     let dir = temp_case("delete-current-store");
     let store = memory_store(&dir.join("settings.json"));
@@ -1492,14 +1541,15 @@ mod tests {
       path: "/tmp/mine.png".to_string(),
       path_dark: "/tmp/mine.png".to_string(),
     };
-    let value = serde_json::to_value(&entry).unwrap();
-    assert_eq!(value, json!({"kind": "custom", "id": "mine", "name": "Mine", "path": "/tmp/mine.png", "path_dark": "/tmp/mine.png"}));
-    // Older replies without path_dark still parse (default "").
-    let legacy: WallpaperEntry = serde_json::from_value(
-      json!({"kind": "premade", "id": "x", "name": "X", "path": "/tmp/x.png"}),
-    )
-    .unwrap();
-    assert_eq!(legacy.path_dark, "");
+    let value = entry.to_json_value();
+    let expected = JsonValue::Object(vec![
+      ("kind".to_string(), JsonValue::Str("custom".to_string())),
+      ("id".to_string(), JsonValue::Str("mine".to_string())),
+      ("name".to_string(), JsonValue::Str("Mine".to_string())),
+      ("path".to_string(), JsonValue::Str("/tmp/mine.png".to_string())),
+      ("path_dark".to_string(), JsonValue::Str("/tmp/mine.png".to_string())),
+    ]);
+    assert_eq!(value, expected);
   }
 
   #[test]

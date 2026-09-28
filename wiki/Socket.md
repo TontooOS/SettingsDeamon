@@ -2,7 +2,9 @@
 
 The socket server binds `DaemonConfig::socket_path` and serves the read
 protocol over newline-delimited JSON. Each connection handles any number of
-requests until EOF. Write operations (`set`/`subscribe`/events) are roadmap
+requests until EOF. Frames use Foundation
+(`foundation::serialization::JsonValue`); the daemon has no serde
+dependency. Write operations (`set`/`subscribe`/events) are roadmap
 items and will be dispatched here, following the FishPerms daemon pattern.
 
 ## Protocol

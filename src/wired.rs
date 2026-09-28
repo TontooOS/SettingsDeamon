@@ -6,12 +6,13 @@
 //! are reported.
 
 use networkkit::util;
-use serde::Serialize;
+
+use crate::json::JsonValue;
 
 pub const OP_WIRED_LIST: &str = "wired_list";
 
 /// One connected wired interface with details for the info menu.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WiredInfo {
     pub interface: String,
     pub connection: String,
@@ -22,6 +23,52 @@ pub struct WiredInfo {
     pub speed_mbps: Option<u32>,
     pub mtu: Option<u32>,
     pub driver: Option<String>,
+}
+
+impl WiredInfo {
+    /// JSON shape for `wired_list` replies.
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("interface".to_string(), JsonValue::Str(self.interface.clone())),
+            ("connection".to_string(), JsonValue::Str(self.connection.clone())),
+            ("state".to_string(), JsonValue::Str(self.state.clone())),
+            (
+                "ipv4_addrs".to_string(),
+                JsonValue::Array(
+                    self.ipv4_addrs.iter().map(|a| JsonValue::Str(a.clone())).collect(),
+                ),
+            ),
+            (
+                "gateway".to_string(),
+                match &self.gateway {
+                    Some(gateway) => JsonValue::Str(gateway.clone()),
+                    None => JsonValue::Null,
+                },
+            ),
+            ("mac".to_string(), JsonValue::Str(self.mac.clone())),
+            (
+                "speed_mbps".to_string(),
+                match self.speed_mbps {
+                    Some(speed) => JsonValue::Integer(speed as i64),
+                    None => JsonValue::Null,
+                },
+            ),
+            (
+                "mtu".to_string(),
+                match self.mtu {
+                    Some(mtu) => JsonValue::Integer(mtu as i64),
+                    None => JsonValue::Null,
+                },
+            ),
+            (
+                "driver".to_string(),
+                match &self.driver {
+                    Some(driver) => JsonValue::Str(driver.clone()),
+                    None => JsonValue::Null,
+                },
+            ),
+        ])
+    }
 }
 
 /// Parse one `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status`

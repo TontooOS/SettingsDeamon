@@ -1,8 +1,6 @@
 use std::io;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
 // ---------------------------------------------------------------------------
 // Defaults (current release)
 // ---------------------------------------------------------------------------
@@ -21,7 +19,7 @@ pub const RELEASE_FILE: &str = "/etc/tontoo-release";
 // ---------------------------------------------------------------------------
 
 /// OS identity facts written to `os.fico`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OsInfo {
   pub name: String,
   pub display_name: String,

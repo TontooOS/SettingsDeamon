@@ -55,7 +55,7 @@ Rules:
 
 ```rust
 pub fn list() -> Result<Vec<WifiNetwork>, String>
-pub fn status() -> Result<serde_json::Value, String>
+pub fn status() -> Result<JsonValue, String>
 pub fn known_list() -> Result<Vec<KnownNetwork>, String>
 pub fn connect(ssid: &str, password: Option<&str>, hidden: bool) -> Result<WifiStatus, String>
 pub fn disconnect() -> Result<(), String>
@@ -65,7 +65,13 @@ pub fn auto_join() -> Result<Option<WifiStatus>, String>
 pub fn known_ssids() -> Result<HashSet<String>, String>
 pub fn known_networks() -> Result<Vec<KnownNetwork>, String>
 pub fn mark_known(networks: Vec<WifiNetwork>, known: &HashSet<String>) -> Vec<WifiNetwork>
+pub fn network_to_json(network: &WifiNetwork) -> JsonValue
+pub fn status_to_json(status: &WifiStatus) -> JsonValue
+pub fn opt_status_to_json(status: &Option<WifiStatus>) -> JsonValue
 ```
+
+- `JsonValue` is `foundation::serialization::JsonValue`; the daemon has
+  no serde dependency.
 
 - All functions are stateless; the CoreData container opens per call.
 - `mark_known` is a pure helper that flags scan results against stored SSIDs.

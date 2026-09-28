@@ -12,8 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-
+use crate::json::JsonValue;
 use crate::store::SettingsStore;
 
 /// Store domain holding the clock display preference.
@@ -26,12 +25,29 @@ pub const OP_DATETIME_SET_TIMEZONE: &str = "datetime_set_timezone";
 pub const OP_DATETIME_SET_24H: &str = "datetime_set_24h";
 
 /// Effective date & time state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DateTimeState {
     pub ntp: bool,
     pub timezone: String,
     pub use_24h: bool,
     pub timezones: Vec<String>,
+}
+
+impl DateTimeState {
+    /// JSON shape for `datetime_get` / `datetime_set_*` replies.
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            ("ntp".to_string(), JsonValue::Bool(self.ntp)),
+            ("timezone".to_string(), JsonValue::Str(self.timezone.clone())),
+            ("use_24h".to_string(), JsonValue::Bool(self.use_24h)),
+            (
+                "timezones".to_string(),
+                JsonValue::Array(
+                    self.timezones.iter().map(|z| JsonValue::Str(z.clone())).collect(),
+                ),
+            ),
+        ])
+    }
 }
 
 /// One `timedatectl show` property value, empty when unavailable.
@@ -182,7 +198,7 @@ pub fn set_24h(store: &Arc<Mutex<SettingsStore>>, use_24h: bool) -> Result<DateT
     let mut guard = store
         .lock()
         .map_err(|_| "datetime set failed: store is locked".to_string())?;
-    guard.set(DOMAIN, KEY_USE_24H, serde_json::json!(use_24h));
+    guard.set(DOMAIN, KEY_USE_24H, JsonValue::Bool(use_24h));
     let effective = get(&guard);
     guard
         .save()

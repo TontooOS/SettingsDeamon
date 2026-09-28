@@ -3,6 +3,8 @@
 `SettingsStore` is a two-level map of domain to key to JSON value with file
 persistence. It mirrors the macOS `~/Library/Preferences/<domain>` idea with
 one JSON file per daemon instead of one plist per domain for the basis.
+Values use Foundation (`foundation::serialization::JsonValue`); the daemon
+has no serde dependency.
 
 ## Data Format
 
@@ -47,8 +49,8 @@ impl SettingsStore {
 
 ```rust
 impl SettingsStore {
-  pub fn get(&self, domain: &str, key: &str) -> Option<&Value>;
-  pub fn set(&mut self, domain: &str, key: &str, value: Value);
+  pub fn get(&self, domain: &str, key: &str) -> Option<&JsonValue>;
+  pub fn set(&mut self, domain: &str, key: &str, value: JsonValue);
   pub fn remove(&mut self, domain: &str, key: &str) -> bool;
   pub fn domains(&self) -> Vec<String>;
 }
@@ -63,14 +65,18 @@ impl SettingsStore {
 ## Usage / Example
 
 ```rust
+use foundation::serialization::JsonValue;
 use settings_daemon::SettingsStore;
 use std::path::PathBuf;
 
 let mut store = SettingsStore::new(PathBuf::from("/tmp/settings.json"));
-store.set("appearance", "theme", serde_json::json!("dark"));
+store.set("appearance", "theme", JsonValue::Str("dark".to_string()));
 store.save()?;
 store.load()?;
-assert_eq!(store.get("appearance", "theme"), Some(&serde_json::json!("dark")));
+assert_eq!(
+  store.get("appearance", "theme"),
+  Some(&JsonValue::Str("dark".to_string()))
+);
 ```
 
 ## Cross References

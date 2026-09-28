@@ -4,6 +4,7 @@ pub mod datetime;
 pub mod display;
 pub mod dns;
 pub mod hardware;
+pub mod json;
 pub mod library;
 pub mod locale;
 pub mod os;

@@ -2,7 +2,6 @@ use std::io;
 use std::path::Path;
 
 use sdk::FishFile::{FishDocument, FishValue};
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -10,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// RAM module type. Only DDR4 and DDR5 are classified, everything else
 /// (including undetectable) is `Unknown`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RamType {
   Ddr4,
   Ddr5,
@@ -36,7 +35,7 @@ impl RamType {
 }
 
 /// Processor facts. Every field is optional because no source is guaranteed.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct CpuInfo {
   pub name: Option<String>,
   pub vendor: Option<String>,
@@ -47,7 +46,7 @@ pub struct CpuInfo {
 
 /// Graphics device facts. `vram_mb` is `None` for shared-memory GPUs or when
 /// the driver does not expose a total.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct GpuInfo {
   pub name: Option<String>,
   pub vendor_id: Option<String>,
@@ -60,7 +59,7 @@ pub struct GpuInfo {
 }
 
 /// One physical RAM module. Only filled when `detailed` collection succeeds.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct RamModule {
   pub locator: Option<String>,
   pub size_mb: Option<u64>,
@@ -70,7 +69,7 @@ pub struct RamModule {
 }
 
 /// Memory facts. `ram_type` is DDR4/DDR5 only, `Unknown` otherwise.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RamInfo {
   pub total_mb: u64,
   pub total_gb: f64,
@@ -95,7 +94,7 @@ impl Default for RamInfo {
 }
 
 /// Full hardware snapshot written to `sys.fico`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct HardwareInfo {
   pub cpu: CpuInfo,
   pub gpus: Vec<GpuInfo>,

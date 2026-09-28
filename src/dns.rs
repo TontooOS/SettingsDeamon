@@ -5,7 +5,8 @@
 //! for the Settings app). An empty server list means DHCP (automatic).
 
 use networkkit::util;
-use serde::Serialize;
+
+use crate::json::JsonValue;
 
 pub const OP_DNS_GET: &str = "dns_get";
 pub const OP_DNS_SET: &str = "dns_set";
@@ -15,10 +16,25 @@ pub const DEFAULT_DNS_SERVERS: &[&str] = &["1.1.1.1", "8.8.8.8"];
 
 /// Effective DNS state: manual servers, or DHCP when `servers` is empty
 /// and `manual` is false.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsState {
     pub servers: Vec<String>,
     pub manual: bool,
+}
+
+impl DnsState {
+    /// JSON shape for `dns_get` / `dns_set` replies.
+    pub fn to_json_value(&self) -> JsonValue {
+        JsonValue::Object(vec![
+            (
+                "servers".to_string(),
+                JsonValue::Array(
+                    self.servers.iter().map(|s| JsonValue::Str(s.clone())).collect(),
+                ),
+            ),
+            ("manual".to_string(), JsonValue::Bool(self.manual)),
+        ])
+    }
 }
 
 /// Parse user input into IPv4 servers. Accepts comma and/or whitespace

@@ -51,11 +51,12 @@ SETTINGS_SOCKET=/tmp/tontoo-settings.sock SETTINGS_STORE=/tmp/settings.json SETT
 Embed the store in Rust:
 
 ```rust
+use foundation::serialization::JsonValue;
 use settings_daemon::SettingsStore;
 use std::path::PathBuf;
 
 let mut store = SettingsStore::new(PathBuf::from("/tmp/settings.json"));
-store.set("appearance", "theme", serde_json::json!("dark"));
+store.set("appearance", "theme", JsonValue::Str("dark".to_string()));
 store.save()?;
 ```
 
@@ -72,6 +73,12 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-28: Foundation JSON migration. The daemon no longer depends on
+  serde/serde_json: store values, socket frames and all backend replies use
+  `foundation::serialization::JsonValue` with manual `to_json_value`
+  converters (`wifi`, `dns`, `wired`, `display`, `datetime`, `locale`,
+  `customize`, `wallpaper`). See [Store.md](Store.md) and
+  [Socket.md](Socket.md).
 - 2026-09-12: Language & region backend. `locale` module (system
   language EN/DE, region formats, keyboard layouts with variants and
   region-based auto-detect via `localectl`), socket ops `locale_get`

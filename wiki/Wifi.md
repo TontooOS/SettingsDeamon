@@ -70,7 +70,7 @@ pub fn status_to_json(status: &WifiStatus) -> JsonValue
 pub fn opt_status_to_json(status: &Option<WifiStatus>) -> JsonValue
 ```
 
-- `JsonValue` is `foundation::serialization::JsonValue`; the daemon has
+- `JsonValue` is `sdk::Foundation::serialization::JsonValue`; the daemon has
   no serde dependency.
 
 - All functions are stateless; the CoreData container opens per call.

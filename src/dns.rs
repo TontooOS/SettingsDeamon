@@ -4,7 +4,7 @@
 //! connection (`dns_get` public read, `dns_set` private write reserved
 //! for the Settings app). An empty server list means DHCP (automatic).
 
-use networkkit::util;
+use sdk::NetworkKit::util;
 
 use crate::json::JsonValue;
 
@@ -84,7 +84,7 @@ fn active_connection() -> Result<(String, String), String> {
     )
     .map_err(|e| e.to_string())?;
     for line in out.lines() {
-        let fields = networkkit::wifi::split_terse(line);
+        let fields = sdk::NetworkKit::wifi::split_terse(line);
         if fields.len() >= 3 && !fields[0].is_empty() && !fields[1].is_empty() && !fields[2].is_empty() {
             return Ok((fields[0].clone(), fields[1].clone()));
         }
@@ -210,14 +210,14 @@ mod tests {
 
     #[test]
     fn get_without_nmcli_errors() {
-        if !networkkit::util::tool_available("nmcli") {
+        if !sdk::NetworkKit::util::tool_available("nmcli") {
             assert!(get().is_err());
         }
     }
 
     #[test]
     fn set_without_nmcli_errors() {
-        if !networkkit::util::tool_available("nmcli") {
+        if !sdk::NetworkKit::util::tool_available("nmcli") {
             assert!(set_from_str("1.1.1.1, 8.8.8.8").is_err());
             assert!(set_from_str("").is_err());
         }

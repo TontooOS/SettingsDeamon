@@ -5,7 +5,7 @@
 //! MAC, MTU, speed and driver come from sysfs. Only connected interfaces
 //! are reported.
 
-use networkkit::util;
+use sdk::NetworkKit::util;
 
 use crate::json::JsonValue;
 
@@ -74,7 +74,7 @@ impl WiredInfo {
 /// Parse one `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status`
 /// line. Returns `(device, connection)` for connected Ethernet devices.
 fn parse_status_line(line: &str) -> Option<(String, String)> {
-    let fields = networkkit::wifi::split_terse(line);
+    let fields = sdk::NetworkKit::wifi::split_terse(line);
     if fields.len() < 4 {
         return None;
     }
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn list_without_nmcli_errors() {
-        if !networkkit::util::tool_available("nmcli") {
+        if !sdk::NetworkKit::util::tool_available("nmcli") {
             assert!(list().is_err());
         }
     }

@@ -5,7 +5,7 @@
 //! re-exports the type and provides small builders so call sites stay
 //! readable without a `json!` macro.
 
-pub use foundation::serialization::JsonValue;
+pub use sdk::Foundation::serialization::JsonValue;
 
 /// Null JSON value.
 pub fn null() -> JsonValue {

@@ -52,7 +52,7 @@ impl DateTimeState {
 
 /// One `timedatectl show` property value, empty when unavailable.
 fn timedatectl_prop(prop: &str) -> String {
-    networkkit::util::run("timedatectl", &["show", "-p", prop, "--value"])
+    sdk::NetworkKit::util::run("timedatectl", &["show", "-p", prop, "--value"])
         .map(|out| out.trim().to_string())
         .unwrap_or_default()
 }
@@ -84,7 +84,7 @@ fn ntp_active() -> bool {
 /// active state afterwards. Best effort for daemon startup; callers log
 /// the error instead of failing.
 pub fn ensure_ntp() -> Result<bool, String> {
-    networkkit::util::run("timedatectl", &["set-ntp", "true"])
+    sdk::NetworkKit::util::run("timedatectl", &["set-ntp", "true"])
         .map_err(|e| format!("datetime ntp failed: {}", e))?;
     Ok(ntp_active())
 }
@@ -140,7 +140,7 @@ fn walk_zoneinfo(base: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
 /// Real timezone list: `timedatectl list-timezones`, else a
 /// `/usr/share/zoneinfo` walk, else `UTC` alone. Never empty.
 pub fn timezone_list() -> Vec<String> {
-    if let Ok(out) = networkkit::util::run("timedatectl", &["list-timezones"]) {
+    if let Ok(out) = sdk::NetworkKit::util::run("timedatectl", &["list-timezones"]) {
         let zones: Vec<String> = out
             .lines()
             .map(str::trim)
@@ -185,7 +185,7 @@ pub fn set_timezone(
     if !timezone_list().iter().any(|z| z == timezone) {
         return Err(format!("datetime set failed: unknown timezone {:?}", timezone));
     }
-    networkkit::util::run("timedatectl", &["set-timezone", timezone])
+    sdk::NetworkKit::util::run("timedatectl", &["set-timezone", timezone])
         .map_err(|e| format!("datetime set failed: {}", e))?;
     let guard = store
         .lock()
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn ensure_ntp_without_timedatectl_errors() {
-        if !networkkit::util::tool_available("timedatectl") {
+        if !sdk::NetworkKit::util::tool_available("timedatectl") {
             assert!(ensure_ntp().is_err());
         }
     }

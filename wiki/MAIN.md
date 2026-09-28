@@ -73,6 +73,10 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-28: SDK-only framework imports. The daemon no longer depends on
+  direct `foundation`/`networkkit`/`coredata` path dependencies: everything
+  (Foundation, NetworkKit, CoreData, FishFile) comes through the system SDK
+  (`sdk` with features `FishFile`, `Foundation`, `NetworkKit`, `CoreData`).
 - 2026-09-28: Foundation JSON migration. The daemon no longer depends on
   serde/serde_json: store values, socket frames and all backend replies use
   `foundation::serialization::JsonValue` with manual `to_json_value`

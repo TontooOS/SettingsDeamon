@@ -15,17 +15,12 @@ name = "settings-daemon"
 path = "src/main.rs"
 
 [dependencies]
-foundation = { path = "../../TontooLibs/Foundation" }
 log = "0.4"
 env_logger = "0.11"
-# WiFi backend: NetworkManager access via NetworkKit, known-network
-# persistence via CoreData (local checkout paths, `/Library/System/*`
-# on the target system).
-networkkit = { path = "../../TontooLibs/NetworkKit" }
-coredata = { path = "../../TontooLibs/CoreData" }
-# Fish Config (.fico) via the TontooOS system SDK (local checkout path,
-# `/Library/System/sdk` on the target system).
-sdk = { path = "../../TontooLibs/SDK", features = ["FishFile"] }
+# All TontooOS frameworks (Foundation, NetworkKit, CoreData, FishFile)
+# come through the system SDK (local checkout path, `/Library/System/sdk`
+# on the target system). No direct framework path dependencies.
+sdk = { path = "../../TontooLibs/SDK", features = ["FishFile", "Foundation", "NetworkKit", "CoreData"] }
 # Wallpaper backend: decode uploads (png/jpeg/webp) and store PNGs.
 # Same version and feature set the compositor uses (shared cargo cache).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

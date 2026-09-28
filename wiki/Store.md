@@ -3,7 +3,7 @@
 `SettingsStore` is a two-level map of domain to key to JSON value with file
 persistence. It mirrors the macOS `~/Library/Preferences/<domain>` idea with
 one JSON file per daemon instead of one plist per domain for the basis.
-Values use Foundation (`foundation::serialization::JsonValue`); the daemon
+Values use Foundation via the system SDK (`sdk::Foundation::serialization::JsonValue`); the daemon
 has no serde dependency.
 
 ## Data Format

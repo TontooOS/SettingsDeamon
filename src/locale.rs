@@ -131,7 +131,7 @@ fn parse_status(output: &str) -> std::collections::HashMap<String, String> {
 }
 
 fn live_status() -> std::collections::HashMap<String, String> {
-    networkkit::util::run("localectl", &["status"])
+    sdk::NetworkKit::util::run("localectl", &["status"])
         .map(|out| parse_status(&out))
         .unwrap_or_default()
 }
@@ -171,7 +171,7 @@ fn locale_for(language: &str) -> String {
 
 /// X11 layouts, compact fallback when `localectl` is unavailable.
 fn x11_layouts() -> Vec<String> {
-    if let Ok(out) = networkkit::util::run("localectl", &["list-x11-keymap-layouts"]) {
+    if let Ok(out) = sdk::NetworkKit::util::run("localectl", &["list-x11-keymap-layouts"]) {
         let layouts: Vec<String> = out
             .lines()
             .map(str::trim)
@@ -195,7 +195,7 @@ pub fn keymap_variants(layout: &str) -> Vec<String> {
     if layout.is_empty() || layout.contains(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_') {
         return Vec::new();
     }
-    networkkit::util::run("localectl", &["list-x11-keymap-variants", layout])
+    sdk::NetworkKit::util::run("localectl", &["list-x11-keymap-variants", layout])
         .map(|out| {
             out.lines()
                 .map(str::trim)
@@ -211,16 +211,16 @@ pub fn keymap_variants(layout: &str) -> Vec<String> {
 fn apply_keymap(layout: &str, variant: Option<&str>) -> Result<(), String> {
     match variant {
         Some(variant) => {
-            networkkit::util::run("localectl", &["set-x11-keymap", layout, variant])
+            sdk::NetworkKit::util::run("localectl", &["set-x11-keymap", layout, variant])
                 .map_err(|e| format!("locale set failed: {}", e))?;
         }
         None => {
-            networkkit::util::run("localectl", &["set-x11-keymap", layout])
+            sdk::NetworkKit::util::run("localectl", &["set-x11-keymap", layout])
                 .map_err(|e| format!("locale set failed: {}", e))?;
         }
     }
     // Console keymap: best effort (names often coincide, variants differ).
-    let _ = networkkit::util::run("localectl", &["set-keymap", layout]);
+    let _ = sdk::NetworkKit::util::run("localectl", &["set-keymap", layout]);
     Ok(())
 }
 
@@ -290,7 +290,7 @@ pub fn set_language(
         region.clone()
     };
     let regional = format!("{}_{}.UTF-8", lang_prefix.split('_').next().unwrap_or("en"), territory);
-    networkkit::util::run(
+    sdk::NetworkKit::util::run(
         "localectl",
         &[
             "set-locale",
@@ -334,7 +334,7 @@ pub fn set_region(store: &Arc<Mutex<SettingsStore>>, region: &str) -> Result<Loc
     let lang_prefix = lang_prefix.split('.').next().unwrap_or("en_US");
     let lang_only = lang_prefix.split('_').next().unwrap_or("en");
     let regional = format!("{}_{}.UTF-8", lang_only, code);
-    networkkit::util::run(
+    sdk::NetworkKit::util::run(
         "localectl",
         &[
             "set-locale",

@@ -465,10 +465,10 @@ pub fn convert_to_png(source: &Path, dest: &Path) -> Result<(), String> {
   Ok(())
 }
 
-fn container() -> Result<coredata::PersistentContainer, String> {
-  coredata::PersistentContainer::new_with_bundle(
+fn container() -> Result<sdk::CoreData::PersistentContainer, String> {
+  sdk::CoreData::PersistentContainer::new_with_bundle(
     crate::wifi::DAEMON_BUNDLE_ID.to_string(),
-    coredata::StoreType::Fico,
+    sdk::CoreData::StoreType::Fico,
   )
   .map_err(|e| e.to_string())
 }

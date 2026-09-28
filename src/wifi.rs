@@ -16,9 +16,9 @@
 
 use std::collections::HashSet;
 
-use coredata::{PersistentContainer, StoreType};
-use networkkit::util;
-use networkkit::wifi::{Wifi, WifiNetwork, WifiStatus};
+use sdk::CoreData::{PersistentContainer, StoreType};
+use sdk::NetworkKit::util;
+use sdk::NetworkKit::wifi::{Wifi, WifiNetwork, WifiStatus};
 
 use crate::json::JsonValue;
 

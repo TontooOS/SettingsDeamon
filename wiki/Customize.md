@@ -134,6 +134,15 @@ printf '{"id": 1, "op": "customize_get"}\n' | socat - UNIX-CONNECT:/run/tontoo-s
 printf '{"id": 2, "op": "customize_set", "params": {"theme": "light"}}\n' | socat - UNIX-CONNECT:/run/tontoo-settings.sock
 ```
 
+`set_customize.py` (repo root) wraps the same frames like the Settings
+app would, with readable output:
+
+```bash
+python3 set_customize.py --get
+python3 set_customize.py --theme light --accent blue
+python3 set_customize.py --glass much
+```
+
 ## Cross References
 
 - [Store.md](Store.md) – backing `customize` domain and persistence

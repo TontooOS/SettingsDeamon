@@ -73,6 +73,9 @@ See [Daemon.md](Daemon.md) for details.
 
 ## Changelog
 
+- 2026-09-28: `set_customize.py` helper. Sends `customize_get` /
+  `customize_set` over the socket like the Settings app (accent, theme,
+  glass, wallpaper). See [Customize.md](Customize.md).
 - 2026-09-28: SDK-only framework imports. The daemon no longer depends on
   direct `foundation`/`networkkit`/`coredata` path dependencies: everything
   (Foundation, NetworkKit, CoreData, FishFile) comes through the system SDK

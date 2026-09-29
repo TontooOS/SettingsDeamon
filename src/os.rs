@@ -8,7 +8,7 @@ use std::path::Path;
 pub const DEFAULT_OS_NAME: &str = "TontooOS";
 pub const DEFAULT_OS_DISPLAY_NAME: &str = "TontooOS Seal";
 pub const DEFAULT_OS_CODENAME: &str = "Seal";
-pub const DEFAULT_OS_VERSION: &str = "26.1.0";
+pub const DEFAULT_OS_VERSION: &str = "27.0.0";
 
 /// Release file the daemon prefers over compiled defaults. BaseOS ships this
 /// file, so new releases never need a daemon rebuild.
@@ -173,7 +173,7 @@ mod tests {
     let info = OsInfo::default();
     assert_eq!(info.display_name, "TontooOS Seal");
     assert_eq!(info.codename, "Seal");
-    assert_eq!(info.version, "26.1.0");
+    assert_eq!(info.version, "27.0.0");
     assert!(!info.beta);
   }
 
@@ -206,12 +206,12 @@ mod tests {
       Some("TontooOS Seal")
     );
     assert_eq!(doc.get("os.codename").and_then(|v| v.as_str()), Some("Seal"));
-    assert_eq!(doc.get("os.version").and_then(|v| v.as_str()), Some("26.1.0"));
+    assert_eq!(doc.get("os.version").and_then(|v| v.as_str()), Some("27.0.0"));
     assert_eq!(doc.get("os.beta").and_then(|v| v.as_bool()), Some(false));
     let reparsed = sdk::FishFile::FishDocument::parse(&doc.to_string()).unwrap();
     assert_eq!(
       reparsed.get("os.version").and_then(|v| v.as_str()),
-      Some("26.1.0")
+      Some("27.0.0")
     );
   }
 }

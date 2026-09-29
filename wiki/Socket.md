@@ -60,7 +60,7 @@ Change events (pushed, no polling needed):
 Success reply:
 
 ```json
-{"id": 1, "ok": true, "result": {"os": {"version": "26.1.0"}}}
+{"id": 1, "ok": true, "result": {"os": {"version": "27.0.0"}}}
 ```
 
 Failure reply (unknown op, missing or corrupt file):

@@ -13,7 +13,7 @@ Override chain, first hit wins per field:
 |---|---|---|
 | 1 | `/etc/tontoo-release` | `KEY=value` lines, shipped by BaseOS |
 | 2 | `TONTOO_OS_*` environment | Intended for tests |
-| 3 | Compiled defaults | `TontooOS Seal 26.1.0`, `beta=false` |
+| 3 | Compiled defaults | `TontooOS Seal 27.0.0`, `beta=false` |
 
 New releases only need a new `/etc/tontoo-release` file, never a daemon
 rebuild.
@@ -37,7 +37,7 @@ pub struct OsInfo {
 | `name` | `String` | `TontooOS` | OS family name |
 | `display_name` | `String` | `TontooOS Seal` | Name shown in UI |
 | `codename` | `String` | `Seal` | Release codename |
-| `version` | `String` | `26.1.0` | Release version |
+| `version` | `String` | `27.0.0` | Release version |
 | `beta` | `bool` | `false` | True when the beta channel is activated |
 
 ### Functions
@@ -62,7 +62,7 @@ os {
     name: TontooOS
     display_name: "TontooOS Seal"
     codename: Seal
-    version: "26.1.0"
+    version: "27.0.0"
     beta: false
 }
 ```
@@ -73,7 +73,7 @@ Release file example (`/etc/tontoo-release`):
 NAME=TontooOS
 DISPLAY_NAME="TontooOS Seal"
 CODENAME=Seal
-VERSION=26.1.0
+VERSION=27.0.0
 BETA=false
 ```
 

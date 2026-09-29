@@ -1113,7 +1113,7 @@ mod tests {
     let dir = std::env::temp_dir().join("settings-daemon-socket-test");
     let _ = std::fs::create_dir_all(&dir);
     let os_path = dir.join("os.fico");
-    std::fs::write(&os_path, "os {\n    version: \"26.1.0\"\n    beta: false\n}\n").unwrap();
+    std::fs::write(&os_path, "os {\n    version: \"27.0.0\"\n    beta: false\n}\n").unwrap();
     let sys_path = dir.join("sys.fico");
     std::fs::write(&sys_path, "ram {\n    total_gb: 32.0\n}\n").unwrap();
 
@@ -1136,7 +1136,7 @@ mod tests {
     assert_eq!(ok_of(&frame), Some(true));
     assert_eq!(
       frame.get("result").and_then(|r| r.get("os")).and_then(|o| o.get("version")).and_then(|v| v.as_str()),
-      Some("26.1.0")
+      Some("27.0.0")
     );
 
     line.clear();

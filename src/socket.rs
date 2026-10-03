@@ -26,7 +26,9 @@ use crate::store::SettingsStore;
 //                 | "wallpaper_get" | "wallpaper_set_current"
 //                 | "wallpaper_set_fill" | "wallpaper_add"
 //                 | "wallpaper_apply" | "wallpaper_delete"
-//                 | "display_get" | "display_set",
+//                 | "display_get" | "display_set"
+//                 | "widget_register" | "widget_list" | "widget_unregister"
+//                 | "widget_content" | "widget_content_list",
 //            "params": {...}}
 // Success:  {"id": 1, "ok": true, "result": {...}}
 // Failure:  {"id": 1, "ok": false, "error": "..."}
@@ -72,6 +74,22 @@ use crate::store::SettingsStore;
 // subscribed to that event (empty filter means all events). Subscribed
 // clients need no polling; `revision` in `customize_changed` payloads
 // keeps poll-based clients in sync.
+//
+// The `widget_*` ops are the desktop widget registry. `widget_register`
+// (`{"app": bundle_id, "widgets": [descriptor, ...]}`) replaces every widget
+// of one app and drops the ones it no longer offers; the whole batch is
+// validated first, so a malformed descriptor changes nothing. `widget_list`
+// returns every descriptor with its `app` and `registered_at`, and
+// `widget_unregister` drops one app again. Descriptors persist in the store,
+// so an app only has to start once for its widgets to appear.
+//
+// `widget_content` (`{"widget": id, "content": <node tree>}`) stores the live
+// content tree of one widget and answers `{"accepted": false}` when the id is
+// not registered. `widget_content_list` returns the current tree of every
+// widget, so the widget engine paints immediately after a restart instead of
+// waiting for the next app tick. Content is never persisted: it is a snapshot
+// of now, and a stale one would be wrong. Both ops are public reads/writes
+// with no extra visibility rule, matching `wifi_list`.
 
 pub const OP_PING: &str = "ping";
 pub const OP_GET_HARDWARE: &str = "get_hardware";
@@ -655,6 +673,116 @@ fn dispatch(
         Err(e) => error_frame(id, e),
       }
     }
+    crate::widgets::OP_REGISTER => {
+      let app = params.get("app").and_then(|v| v.as_str()).unwrap_or("");
+      let descriptors = match params.get("widgets") {
+        Some(JsonValue::Array(items)) => items.clone(),
+        _ => {
+          return error_frame(
+            id,
+            "widget register failed: widgets must be an array".to_string(),
+          )
+        }
+      };
+      let outcome = store
+        .lock()
+        .map_err(|_| "widget register failed: store is locked".to_string())
+        .and_then(|mut guard| crate::widgets::register(&mut guard, app, &descriptors));
+      match outcome {
+        Ok(registered) => {
+          let entries = match store.lock() {
+            Ok(guard) => crate::widgets::list(&guard),
+            Err(_) => Vec::new(),
+          };
+          broadcaster.publish(crate::widgets::EVENT_WIDGETS_CHANGED, &crate::widgets::widgets_event(&entries));
+          success_frame(
+            id,
+            JsonValue::Object(vec![(
+              "registered".to_string(),
+              JsonValue::Integer(registered as i64),
+            )]),
+          )
+        }
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::widgets::OP_LIST => match store
+      .lock()
+      .map_err(|_| "widget list failed: store is locked".to_string())
+      .map(|guard| crate::widgets::list(&guard))
+    {
+      Ok(entries) => success_frame(
+        id,
+        JsonValue::Object(vec![("widgets".to_string(), JsonValue::Array(entries))]),
+      ),
+      Err(e) => error_frame(id, e),
+    },
+    crate::widgets::OP_UNREGISTER => {
+      let app = params.get("app").and_then(|v| v.as_str()).unwrap_or("");
+      let outcome = store
+        .lock()
+        .map_err(|_| "widget unregister failed: store is locked".to_string())
+        .and_then(|mut guard| crate::widgets::unregister(&mut guard, app));
+      match outcome {
+        Ok(removed) => {
+          let entries = match store.lock() {
+            Ok(guard) => crate::widgets::list(&guard),
+            Err(_) => Vec::new(),
+          };
+          broadcaster.publish(crate::widgets::EVENT_WIDGETS_CHANGED, &crate::widgets::widgets_event(&entries));
+          success_frame(
+            id,
+            JsonValue::Object(vec![(
+              "removed".to_string(),
+              JsonValue::Integer(removed as i64),
+            )]),
+          )
+        }
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::widgets::OP_CONTENT => {
+      let widget = params.get("widget").and_then(|v| v.as_str()).unwrap_or("");
+      let content = match params.get("content") {
+        Some(value) => value.clone(),
+        None => {
+          return error_frame(
+            id,
+            "widget content failed: content must be an object".to_string(),
+          )
+        }
+      };
+      match crate::widgets::set_content(widget, content.clone()) {
+        Ok(accepted) => {
+          if accepted {
+            broadcaster
+              .publish(crate::widgets::EVENT_CONTENT_CHANGED, &crate::widgets::content_event(widget, &content));
+          }
+          success_frame(
+            id,
+            JsonValue::Object(vec![("accepted".to_string(), JsonValue::Bool(accepted))]),
+          )
+        }
+        Err(e) => error_frame(id, e),
+      }
+    }
+    crate::widgets::OP_CONTENT_LIST => success_frame(
+      id,
+      JsonValue::Object(vec![(
+        "content".to_string(),
+        JsonValue::Array(
+          crate::widgets::content_list()
+            .into_iter()
+            .map(|(widget, content)| {
+              JsonValue::Object(vec![
+                ("widget".to_string(), JsonValue::Str(widget)),
+                ("content".to_string(), content),
+              ])
+            })
+            .collect(),
+        ),
+      )]),
+    ),
     _ => error_frame(id, format!("unknown op: {:?}", op)),
   }
 }
